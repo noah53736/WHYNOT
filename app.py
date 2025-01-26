@@ -10,6 +10,7 @@ import string
 from datetime import datetime
 import json
 import matplotlib.pyplot as plt
+import subprocess  # Ajout pour la fonction accelerate_ffmpeg
 
 from pydub import AudioSegment, silence
 
@@ -203,7 +204,8 @@ def main():
     total_credit = sum(credits.values())
     remaining_credit = sum([credit for credit in credits.values()])
     st.sidebar.subheader("Crédits")
-    st.sidebar.progress(remaining_credit / total_credit if total_credit > 0 else 0)
+    progress = remaining_credit / total_credit if total_credit > 0 else 0
+    st.sidebar.progress(progress)
     st.sidebar.write(f"**Total Crédit**: ${total_credit:.2f}")
     st.sidebar.write(f"**Crédit Restant**: ${remaining_credit:.2f}")
     plot_credits(credits)
@@ -269,7 +271,7 @@ def main():
             # Extraire les clés API dans l'ordre
             ordered_api_keys = [st.secrets[key] for key in ordered_keys]
 
-            # Transcription avec Failover
+            # Transcription avec Failover et segmentation
             transcription, used_key, cost = nova_api.transcribe_nova_one_shot(
                 file_bytes=audio_data,
                 api_keys=ordered_api_keys,
