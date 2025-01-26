@@ -1,6 +1,6 @@
 # === Streamlit + Data Science ===
 streamlit>=1.25.0
-pandas
+pandas>=1.5.0,<2.0.0
 numpy
 
 # === Audio ===
@@ -17,3 +17,6 @@ deepgram-sdk
 
 # === Visualisation (pour éviter l'erreur Altair) ===
 altair==4.2.2
+
+# === PyArrow ===
+pyarrow>=10.0.0
