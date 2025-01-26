@@ -195,11 +195,6 @@ def main():
         st.sidebar.error("Toutes les clés API sont épuisées.")
         st.stop()
 
-    # Sélectionner la clé API à utiliser (Failover automatique)
-    # L'utilisateur ne sélectionne pas manuellement, le système sélectionne automatiquement
-    # En cas d'échec, le système passe à la clé suivante
-    # Ainsi, on ne présente pas un choix à l'utilisateur mais on gère automatiquement
-
     # Afficher le crédit total et restant
     total_credit = sum(credits.values())
     remaining_credit = sum([credit for credit in credits.values()])
@@ -224,8 +219,11 @@ def main():
         uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
                                         type=["mp3", "wav", "m4a", "ogg", "webm"])
         if uploaded_file:
-            audio_data = uploaded_file.read()
-            st.audio(uploaded_file)
+            if uploaded_file.size > 100 * 1024 * 1024:  # 100 MB
+                st.error("Le fichier est trop volumineux. La taille maximale autorisée est de 100MB.")
+            else:
+                audio_data = uploaded_file.read()
+                st.audio(uploaded_file)
     else:
         mic_input = st.audio_input("Enregistrement micro")
         if mic_input:
@@ -235,10 +233,7 @@ def main():
     # === Prétraitement Audio ===
     if audio_data:
         try:
-            with open("temp_original.wav", "wb") as foo:
-                foo.write(audio_data)
-
-            aud = AudioSegment.from_file("temp_original.wav")
+            aud = AudioSegment.from_file(io.BytesIO(audio_data))
             original_sec = len(aud) / 1000.0
             st.write(f"Durée d'origine : {human_time(original_sec)}")
 
