@@ -28,6 +28,10 @@ SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
 CROSSFADE_MS = 50
 
+WHISPER_API_COST_PER_MINUTE = 0.006
+LOCAL_COST_EUR_PER_HOUR = 4.0
+NOVA_COST_PER_MINUTE = 0.007
+
 ###############################################################################
 # UTILITAIRES
 ###############################################################################
@@ -61,6 +65,18 @@ def human_time(sec: float) -> str:
         h, r = divmod(sec, 3600)
         m, s = divmod(r, 60)
         return f"{h}h{m}m{s}s"
+
+def remove_euh_in_text(text: str):
+    words = text.split()
+    cleaned = []
+    cnt = 0
+    for w in words:
+        wlow = w.lower().strip(".,!?;:")
+        if "euh" in wlow or "heu" in wlow:
+            cnt += 1
+        else:
+            cleaned.append(w)
+    return (" ".join(cleaned), cnt)
 
 ###############################################################################
 # ACCELERATION (TIME-STRETCH)
@@ -120,120 +136,132 @@ def remove_silences_smooth(audio_seg: AudioSegment,
     return combined
 
 ###############################################################################
-# LOAD CREDITS
+# LOCAL WHISPER
 ###############################################################################
-def load_credits():
-    if os.path.exists(CREDITS_FILE):
-        with open(CREDITS_FILE, "r") as f:
-            credits = json.load(f)
+@st.cache_resource
+def load_local_model(model_name: str):
+    import whisper
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    st.info(f"[Local Whisper] Chargement du modèle {model_name} sur {dev}...")
+    return whisper.load_model(model_name, device=dev)
+
+def transcribe_local(file_path: str, model_name: str) -> str:
+    model = load_local_model(model_name)
+    result = model.transcribe(file_path)
+    return result["text"]
+
+###############################################################################
+# OPENAI
+###############################################################################
+def transcribe_openai(file_path: str, openai_key: str) -> str:
+    url = "https://api.openai.com/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {openai_key}"}
+    with open(file_path, "rb") as f:
+        files = {"file": f}
+        data = {"model": "whisper-1", "response_format": "text"}
+        r = requests.post(url, headers=headers, files=files, data=data)
+    if r.status_code == 200:
+        return r.text
     else:
-        # Initialiser les crédits si le fichier n'existe pas
-        credits = {}
-    return credits
+        st.error(f"[OpenAI] Erreur {r.status_code} : {r.text}")
+        return ""
 
-def save_credits(credits):
-    with open(CREDITS_FILE, "w") as f:
-        json.dump(credits, f, indent=4)
-
-###############################################################################
-# GRAPH CRÉDITS
-###############################################################################
-def plot_credits(credits):
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
-
-    labels = ['Crédit Total', 'Crédit Restant']
-    sizes = [total_credit, remaining_credit]
-    colors = ['#ff9999','#66b3ff']
-    fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-    ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
-    st.pyplot(fig)
-
-###############################################################################
-# MAIN STREAMLIT APP
 ###############################################################################
 def main():
-    st.set_page_config(page_title="NBL Audio", layout="wide")
-    st.title("NBL Audio – Transcription Audio")
+    st.set_page_config(page_title="NBL Audio – 3 modes", layout="wide")
+    st.title("NBL Audio – Local / OpenAI / Nova")
 
-    # Initialiser / Charger l'historique
     if "hist_df" not in st.session_state:
         df = load_history()
         st.session_state["hist_df"] = df
     hist_df = st.session_state["hist_df"]
 
-    # Charger les crédits
-    credits = load_credits()
+    # Choix du mode
+    st.sidebar.header("Mode de Transcription")
+    mode = st.sidebar.radio("Choix :", ["Local Whisper", "OpenAI Whisper", "Nova (Deepgram)"])
 
-    # === Options de Transcription ===
-    st.sidebar.header("Options Transcription")
+    # OpenAI key
+    openai_key = os.getenv("OPENAI_APIKEY", "")  # Nom ajusté pour correspondre au requirements
 
-    # Charger les clés API depuis les secrets
-    api_keys = []
-    key_ids = []
-    for key in st.secrets:
-        if key.startswith("NOVA"):
-            api_keys.append(st.secrets[key])
-            key_ids.append(key)
+    # Nova keys : "NOVA", "NOVA2", "NOVA3"
+    # On propose un select
+    nova_key_choice = st.sidebar.selectbox(
+        "Clé Nova à utiliser",
+        ["NOVA", "NOVA2", "NOVA3"]
+    )
+    chosen_nova_key = os.getenv(nova_key_choice, "")
 
-    if not api_keys:
-        st.sidebar.error("Aucune clé API DeepGram trouvée dans les secrets.")
-        st.stop()
+    # Param local
+    local_model = None
+    if mode == "Local Whisper":
+        local_model = st.sidebar.selectbox("Modèle local Whisper", 
+            ["tiny", "base", "small", "medium", "large", "large-v2"], index=1)
 
-    # Filtrer les clés API avec crédit suffisant
-    selectable_keys = []
-    key_number_mapping = {}  # Mapping de label à clé réelle
-    for i, key_id in enumerate(key_ids):
-        remaining = credits.get(key_id, 0)
-        if remaining > 0:
-            label = f"API Key {i+1}"
-            selectable_keys.append(label)
-            key_number_mapping[label] = key_id
+    # Param Nova
+    st.sidebar.write("---")
+    lang_nova = "fr"
+    model_nova = "nova-2"
+    punct_nova = True
+    numerals_nova = True
+    if mode == "Nova (Deepgram)":
+        st.sidebar.subheader("Deepgram Nova – Paramètres")
+        lang_nova = st.sidebar.text_input("Langue (ex: 'fr', 'en-US')", "fr")
+        # ex "nova-2","whisper-base","whisper-medium","whisper-large"
+        model_nova = st.sidebar.selectbox("Modèle Deepgram", 
+            ["nova-2", "whisper-base", "whisper-medium", "whisper-large"], index=0
+        )
+        punct_nova = st.sidebar.checkbox("Ponctuation (punctuate)", True)
+        numerals_nova = st.sidebar.checkbox("Nombres => chiffres (numerals)", True)
 
-    if not selectable_keys:
-        st.sidebar.error("Toutes les clés API sont épuisées.")
-        st.stop()
-
-    # Afficher le crédit total et restant
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
-    st.sidebar.subheader("Crédits")
-    progress = remaining_credit / total_credit if total_credit > 0 else 0
-    st.sidebar.progress(progress)
-    st.sidebar.write(f"**Total Crédit**: ${total_credit:.2f}")
-    st.sidebar.write(f"**Crédit Restant**: ${remaining_credit:.2f}")
-    plot_credits(credits)
-
-    # === Transformations ===
     st.sidebar.write("---")
     st.sidebar.header("Transformations")
     remove_sil = st.sidebar.checkbox("Supprimer silences (douce)", False)
     speed_factor = st.sidebar.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
+    remove_euh = st.sidebar.checkbox("Retirer 'euh' ?", False)
 
-    # === Téléchargement ou Enregistrement Audio ===
+    st.sidebar.write("---")
+    st.sidebar.header("Historique")
+    # Colonnes => "Alias","Méthode","Modèle","Durée","Temps","Coût","Transcription","Date","Audio Binaire"
+    disp_cols = ["Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût", "Transcription", "Date"]
+    if not hist_df.empty:
+        show_cols = [c for c in disp_cols if c in hist_df.columns]
+        st.sidebar.dataframe(hist_df[show_cols][::-1], use_container_width=True)
+    else:
+        st.sidebar.info("Historique vide.")
+
+    st.sidebar.write("### Derniers Audios (3)")
+    if not hist_df.empty:
+        last_auds = hist_df[::-1].head(3)
+        for idx, row in last_auds.iterrows():
+            ab = row.get("Audio Binaire", None)
+            if isinstance(ab, bytes):
+                st.sidebar.write(f"**{row.get('Alias','?')}** – {row.get('Date','?')}")
+                st.sidebar.audio(ab, format="audio/wav")
+
     st.write("## Source Audio")
     audio_data = None
     input_choice = st.radio("Fichier ou Micro ?", ["Fichier", "Micro"])
     if input_choice == "Fichier":
-        uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
-                                        type=["mp3", "wav", "m4a", "ogg", "webm"])
-        if uploaded_file:
-            if uploaded_file.size > 100 * 1024 * 1024:  # 100 MB
+        upf = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
+                              type=["mp3", "wav", "m4a", "ogg", "webm"])
+        if upf:
+            if upf.size > 100 * 1024 * 1024:  # 100 MB
                 st.error("Le fichier est trop volumineux. La taille maximale autorisée est de 100MB.")
             else:
-                audio_data = uploaded_file.read()
-                st.audio(uploaded_file)
+                audio_data = upf.read()
+                st.audio(upf)
     else:
-        mic_input = st.audio_input("Enregistrement micro")
-        if mic_input:
-            audio_data = mic_input.read()
-            st.audio(mic_input)
+        mic_in = st.audio_input("Enregistrement micro")
+        if mic_in:
+            audio_data = mic_in.read()
+            st.audio(mic_in)
 
-    # === Prétraitement Audio ===
     if audio_data:
         try:
-            aud = AudioSegment.from_file(io.BytesIO(audio_data))
+            with open("temp_original.wav", "wb") as foo:
+                foo.write(audio_data)
+
+            aud = AudioSegment.from_file("temp_original.wav")
             original_sec = len(aud) / 1000.0
             st.write(f"Durée d'origine : {human_time(original_sec)}")
 
@@ -251,115 +279,132 @@ def main():
         except Exception as e:
             st.error(f"Erreur chargement/preproc : {e}")
 
-    # === Transcription ===
-    if audio_data and st.button("Transcrire"):
-        try:
-            st.write("Transcription en cours...")
+    if audio_data:
+        if st.button("Transcrire maintenant"):
             start_t = time.time()
+            with open("temp_input.wav", "wb") as f:
+                final_aud.export(f, format="wav")
 
-            # Charger les crédits
-            credits = load_credits()
+            final_txt = ""
+            cost_str = ""
+            final_sec = len(final_aud) / 1000.0
 
-            # Liste des clés API ordonnées
-            ordered_keys = sorted(key_ids, key=lambda x: int(x.replace("NOVA", "")))
+            if mode == "Local Whisper":
+                if not local_model:
+                    st.error("Aucun modèle local")
+                    return
+                txt = transcribe_local("temp_input.wav", local_model)
+                final_txt = txt
+                cost_str = "0.00 €"
+                st.info("[Local] Coût=0€")
 
-            # Extraire les clés API dans l'ordre
-            ordered_api_keys = [st.secrets[key] for key in ordered_keys]
-
-            # Transcription avec Failover et segmentation
-            transcription, used_key, cost = nova_api.transcribe_nova_one_shot(
-                file_bytes=audio_data,
-                api_keys=ordered_api_keys,
-                language="fr",  # Modifier selon tes besoins
-                model_name="whisper-large",  # Modifier selon tes besoins
-                punctuate=True,
-                numerals=True,
-                credits=credits
-            )
-
-            elapsed_time = time.time() - start_t
-            if transcription:
-                st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
-                st.subheader("Résultat de la transcription")
-                st.write(transcription)
-
-                # Bouton pour télécharger la transcription
-                st.download_button(
-                    "Télécharger la transcription",
-                    data=transcription,
-                    file_name="transcription.txt",
-                    mime="text/plain"
-                )
-
-                # Calcul des gains en temps
-                gain_sec = 0
-                final_sec = len(final_aud) / 1000.0
-                if final_sec < original_sec:
-                    gain_sec = original_sec - final_sec
-                gain_str = human_time(gain_sec)
-
-                # Affichage des Informations
-                st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
-                         f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost:.2f}")
-
-                # Identifier quelle API Key a été utilisée
-                if used_key in key_ids:
-                    api_key_number = key_ids.index(used_key) + 1
-                    st.write(f"**Clé API utilisée** : API Key {api_key_number}")
-                else:
-                    st.write(f"**Clé API utilisée** : {used_key}")
-
-                # Enregistrer dans l'historique
-                alias = generate_alias(6)
-                audio_buf = audio_data  # Directement utiliser les bytes
-
-                new_row = {
-                    "Alias": alias,
-                    "Méthode": "Nova (Deepgram)",
-                    "Modèle": "whisper-large",
-                    "Durée": f"{human_time(original_sec)}",
-                    "Temps": human_time(elapsed_time),
-                    "Coût": f"${cost:.2f}",
-                    "Transcription": transcription,
-                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": audio_buf
-                }
-
-                # Utiliser pd.concat au lieu de append
-                new_df = pd.DataFrame([new_row])
-                hist_df = pd.concat([hist_df, new_df], ignore_index=True)
-                st.session_state["hist_df"] = hist_df
-                save_history(hist_df)
-
-                st.info(f"Historique mis à jour. Alias={alias}")
-
-                # Rafraîchir les crédits affichés
-                plot_credits(credits)
+            elif mode == "OpenAI Whisper":
+                if not openai_key:
+                    st.error("Clé 'OPENAI_APIKEY' manquante.")
+                    return
+                txt = transcribe_openai("temp_input.wav", openai_key)
+                final_txt = txt
+                mn = final_sec / 60.0
+                cost_val = round(mn * WHISPER_API_COST_PER_MINUTE, 3)
+                cost_str = f"{cost_val} $"
+                st.info(f"[OpenAI] ~{cost_str}")
 
             else:
-                st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
-        except Exception as e:
-            st.error(f"Erreur lors du traitement : {e}")
+                # Nova
+                if not chosen_nova_key:
+                    st.error(f"La clé '{nova_key_choice}' est vide ?")
+                    return
+                txt = nova_api.transcribe_nova_one_shot(
+                    "temp_input.wav",
+                    dg_api_key=chosen_nova_key,
+                    language=lang_nova,
+                    model_name=model_nova,
+                    punctuate=punct_nova,
+                    numerals=numerals_nova
+                )
+                final_txt = txt
+                mn = final_sec / 60.0
+                cost_val = round(mn * NOVA_COST_PER_MINUTE, 3)
+                cost_str = f"{cost_val} $"
+                st.info(f"[Nova] ~{cost_str}")
 
-    # === Gestion de l'Historique ===
-    st.sidebar.write("---")
-    st.sidebar.header("Historique")
+            # Remove 'euh'
+            if remove_euh:
+                new_txt, ccc = remove_euh_in_text(final_txt)
+                final_txt = new_txt
+                st.write(f"({ccc} 'euh' supprimés)")
 
-    disp_cols = ["Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût", "Transcription", "Date"]
-    if not hist_df.empty:
-        show_cols = [c for c in disp_cols if c in hist_df.columns]
-        st.sidebar.dataframe(hist_df[show_cols][::-1], use_container_width=True)
-    else:
-        st.sidebar.info("Historique vide.")
+            total_proc = time.time() - start_t
+            total_str = human_time(total_proc)
 
-    st.sidebar.write("### Derniers Audios (3)")
-    if not hist_df.empty:
-        last_auds = hist_df[::-1].head(3)
-        for idx, row in last_auds.iterrows():
-            ab = row.get("Audio Binaire", None)
-            if isinstance(ab, bytes):
-                st.sidebar.write(f"**{row.get('Alias', '?')}** – {row.get('Date', '?')}")
-                st.sidebar.audio(ab, format="audio/wav")
+            # Gains
+            gain_sec = 0
+            if final_sec < original_sec:
+                gain_sec = original_sec - final_sec
+            gain_str = human_time(gain_sec)
 
-if __name__ == "__main__":
-    main()
+            st.success(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
+                       f"Temps effectif: {total_str} | Coût={cost_str}")
+
+            st.write("## Résultat Final")
+            st.text_area("Texte :", final_txt, height=200)
+            st.download_button("Télécharger",
+                data=final_txt.encode("utf-8"),
+                file_name="transcription.txt"
+            )
+
+            # Mettre à jour historique
+            alias = generate_alias(6)
+            audio_buf = audio_data  # Directement utiliser les bytes
+
+            used_model = ""
+            if mode == "Local Whisper":
+                used_model = local_model
+            elif mode == "OpenAI Whisper":
+                used_model = "whisper-1"
+            else:
+                used_model = model_nova
+
+            new_row = {
+                "Alias": alias,
+                "Méthode": mode,
+                "Modèle": used_model,
+                "Durée": f"{human_time(original_sec)}",
+                "Temps": total_str,
+                "Coût": cost_str,
+                "Transcription": final_txt,
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Audio Binaire": audio_buf
+            }
+            hist_df = pd.concat([hist_df, pd.DataFrame([new_row])], ignore_index=True)
+            st.session_state["hist_df"] = hist_df
+            save_history(hist_df)
+
+            st.info(f"Historique mis à jour. Alias={alias}")
+
+    def main_wrapper():
+        main()
+
+    if __name__ == "__main__":
+        main_wrapper()
+    ```
+
+---
+
+## **4. Vérifications et Tests**
+
+### **a. Vérifier la Présence et le Nom Correct de `runtime.txt`**
+
+Assure-toi que le fichier `runtime.txt` est **nommé exactement** `runtime.txt` et qu'il se trouve **à la racine** de ton repository GitHub. Toute différence dans le nom ou l'emplacement empêchera Streamlit Cloud de le reconnaître.
+
+### **b. Installer les Packages Localement (Optionnel mais Recommandé)**
+
+Avant de pousser les modifications sur GitHub, il est recommandé de tester l'installation des dépendances localement avec Python 3.10 pour s'assurer qu'il n'y a pas de conflits.
+
+**Action :**
+
+1. **Créer un Environnement Virtuel avec Python 3.10 :**
+
+   ```bash
+   python3.10 -m venv env
+   source env/bin/activate
