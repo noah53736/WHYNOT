@@ -5,13 +5,20 @@ wheel>=0.40.0
 # === Streamlit + Data Science ===
 streamlit>=1.25.0
 pandas==1.5.3
-numpy>=1.24.0  # Mise à jour pour éviter les conflits avec Python 3.12
+numpy>=1.24.0
 
 # === Audio ===
 pydub==0.25.1
 librosa==0.10.0.post2
 soundfile==0.12.1
 ffmpeg-python
+torch
+torchaudio
+
+# === Transcription ===
+openai-whisper
+# Option GitHub pour openai-whisper, si besoin :
+# git+https://github.com/openai/whisper.git
 
 # === Web Requests ===
 requests
@@ -19,12 +26,6 @@ requests
 # === Deepgram ===
 deepgram-sdk
 
-# === Visualisation ===
-altair==4.2.2
-
-# === PyArrow ===
-pyarrow==10.0.0
-
-# === Google Sheets ===
-gspread==5.7.0
-# Ne spécifie pas google-auth ici pour éviter les conflits
+# === Librosa Dependencies ===
+numba>=0.56.0
+llvmlite>=0.38.0
