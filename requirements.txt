@@ -1,7 +1,11 @@
+# === Build Tools ===
+setuptools>=65.0.0
+wheel>=0.40.0
+
 # === Streamlit + Data Science ===
 streamlit>=1.25.0
 pandas==1.5.3
-numpy==1.23.5
+numpy>=1.24.0
 
 # === Audio ===
 pydub==0.25.1
@@ -23,5 +27,4 @@ pyarrow==10.0.0
 
 # === Google Sheets ===
 gspread==5.7.0
-# Retiré la ligne suivante pour éviter le conflit
-# google-auth>=2.16.0,<3.0.0
+# Ne spécifie pas google-auth ici pour éviter les conflits
