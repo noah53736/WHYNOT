@@ -13,7 +13,7 @@ def transcribe_nova_one_shot(
     model_name: str = "nova-2",
     punctuate: bool = True,
     numerals: bool = True
-):
+) -> str:
     """
     Envoie le fichier complet à Deepgram (Nova ou Whisper-Cloud).
     Aucune utilisation d'OpenAI ici.
