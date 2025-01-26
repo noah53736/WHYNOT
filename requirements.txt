@@ -2,3 +2,4 @@ streamlit
 pydub
 requests
 ffmpeg
+ffmpeg-python
