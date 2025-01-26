@@ -10,7 +10,7 @@ import string
 from datetime import datetime
 import json
 import matplotlib.pyplot as plt
-import subprocess  # Ajout pour la fonction accelerate_ffmpeg
+import subprocess  # Pour l'accélération audio
 
 from pydub import AudioSegment, silence
 
