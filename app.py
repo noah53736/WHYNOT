@@ -18,7 +18,7 @@ AudioSegment.ffprobe = shutil.which("ffprobe")
 # === Fonction de Transcription Nova (DeepGram) ===
 def transcribe_nova_one_shot(
     file_bytes: bytes,
-    dg_api_key: str,      # la clé Nova (NOVA / NOVA2 / NOVA3)
+    dg_api_key: str,      # la clé Nova (NOVA)
     language: str = "fr",
     model_name: str = "nova-2",
     punctuate: bool = True,
