@@ -42,14 +42,15 @@ def transcribe_segment(
 ) -> (str, float):
     """
     Transcrit un segment audio en utilisant une clé API spécifique.
+    Retourne la transcription et le coût associé.
     """
-    temp_in = "temp_nova_in.wav"
     transcription = ""
     cost = 0.0
 
     try:
         # Conversion en 16kHz mono WAV
         segment_16k = segment.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        temp_in = "temp_nova_in.wav"
         segment_16k.export(temp_in, format="wav")
 
         # Calcul du coût pour le segment
@@ -120,13 +121,12 @@ def transcribe_nova_one_shot(
     Tente de transcrire en utilisant les clés API fournies dans l'ordre.
     Retourne la transcription complète, la clé utilisée, et le coût total.
     """
-    temp_in = "temp_nova_in.wav"
     transcription_complete = ""
     used_key = ""
     total_cost = 0.0
 
     try:
-        # Conversion en 16kHz mono WAV
+        # Conversion en AudioSegment
         audio = AudioSegment.from_file(io.BytesIO(file_bytes))
         segments = segment_audio(audio, segment_length_ms=10*60*1000)  # 10 minutes par segment
 
@@ -181,9 +181,5 @@ def transcribe_nova_one_shot(
     except Exception as e:
         st.error(f"Exception durant la transcription: {e}")
         traceback.print_exc()
-    finally:
-        # Nettoyage du fichier temporaire
-        if os.path.exists(temp_in):
-            os.remove(temp_in)
 
     return transcription_complete.strip(), used_key, round(total_cost, 4)
