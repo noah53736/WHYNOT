@@ -18,7 +18,7 @@ AudioSegment.ffprobe = shutil.which("ffprobe")
 # === Fonction de Transcription Nova (DeepGram) ===
 def transcribe_nova_one_shot(
     file_bytes: bytes,
-    dg_api_key: str,      # la clé Nova (NOVA)
+    dg_api_key: str,      # la clé Nova (NOVA / NOVA2 / NOVA3)
     language: str = "fr",
     model_name: str = "nova-2",
     punctuate: bool = True,
@@ -110,18 +110,6 @@ def human_time(sec: float) -> str:
         m, s = divmod(r, 60)
         return f"{h}h{m}m{s}s"
 
-def remove_euh_in_text(text: str):
-    words = text.split()
-    cleaned = []
-    cnt = 0
-    for w in words:
-        wlow = w.lower().strip(".,!?;:")
-        if "euh" in wlow or "heu" in wlow:
-            cnt += 1
-        else:
-            cleaned.append(w)
-    return (" ".join(cleaned), cnt)
-
 # === Accélération (Time-Stretch) ===
 def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
     """
@@ -204,8 +192,31 @@ def main():
 
     # === Options de Transcription ===
     st.sidebar.header("Options Deepgram")
-    DG_MODELS = ["nova-2", "whisper-large"]  # Modèles Deepgram disponibles
-    chosen_model = st.sidebar.selectbox("Choisissez un modèle", DG_MODELS, index=0)
+
+    # Mapping des clés API à leurs modèles respectifs
+    # Ajuste ce dictionnaire selon tes clés et modèles
+    api_model_mapping = {
+        "NOVA": "nova-2",
+        "NOVA2": "whisper-large",
+        # Ajoute d'autres clés si nécessaire
+    }
+
+    # Récupérer toutes les clés API définies dans les secrets
+    available_keys = [key for key in st.secrets.keys() if key.startswith("NOVA")]
+
+    if not available_keys:
+        st.sidebar.error("Aucune clé API DeepGram (NOVA) trouvée dans les secrets.")
+        st.stop()
+
+    chosen_key = st.sidebar.selectbox("Choisissez une clé API DeepGram", available_keys)
+
+    # Déterminer le modèle en fonction de la clé choisie
+    chosen_model = api_model_mapping.get(chosen_key, "nova-2")  # Modèle par défaut si non trouvé
+
+    # Lire la clé API depuis les secrets
+    dg_key = st.secrets[chosen_key]
+
+    # Déterminer la langue
     DEFAULT_LANGUAGE = "fr"
     LANGUAGE_MAP = {
         "fr": "fr",
@@ -227,7 +238,8 @@ def main():
 
     language = normalize_language(input_language)
 
-    st.write(f"**Modèle choisi** : {chosen_model}")
+    st.write(f"**Clé API utilisée** : {chosen_key}")
+    st.write(f"**Modèle utilisé** : {chosen_model}")
     st.write(f"**Langue choisie** : {language}")
 
     # === Téléchargement ou Enregistrement Audio ===
@@ -255,12 +267,6 @@ def main():
             st.write("Transcription en cours...")
             start_time = time.time()
 
-            # Lire la clé API depuis les secrets
-            dg_key = st.secrets.get("NOVA", "")
-            if not dg_key:
-                st.error("La clé API 'NOVA' n'est pas configurée. Ajoute-la dans les secrets Streamlit.")
-                st.stop()
-
             # **Vérification de la Clé API**
             st.write(f"Longueur de la clé API lue : {len(dg_key)} caractères")
 
@@ -287,14 +293,31 @@ def main():
                     mime="text/plain"
                 )
 
-                # Optionnel : Retirer "euh"
-                remove_euh_box = st.checkbox("Retirer 'euh' ?", False)
-                if remove_euh_box:
-                    new_txt, ccc = remove_euh_in_text(transcription)
-                    transcription = new_txt
-                    st.write(f"({ccc} occurrences de 'euh' retirées)")
-                    st.write("### Résultat après suppression de 'euh'")
-                    st.write(transcription)
+                # Enregistrer dans l'historique
+                alias = generate_alias()
+                method = input_choice
+                duration = human_time(elapsed_time)
+                current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                # Coût estimé (ajuster selon ta tarification DeepGram)
+                # Par exemple, supposons 0.01€ par minute
+                cost = round(elapsed_time / 60 * 0.01, 4)
+
+                new_entry = {
+                    "Alias": alias,
+                    "Méthode": method,
+                    "Modèle": chosen_model,
+                    "Durée": duration,
+                    "Temps": elapsed_time,
+                    "Coût": cost,
+                    "Transcription": transcription,
+                    "Date": current_time,
+                    "Audio Binaire": audio_data
+                }
+
+                # Ajouter la nouvelle entrée à l'historique
+                st.session_state["hist_df"] = st.session_state["hist_df"].append(new_entry, ignore_index=True)
+                save_history(st.session_state["hist_df"])
+
             else:
                 st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
         except Exception as e:
@@ -303,6 +326,7 @@ def main():
     # === Gestion de l'Historique ===
     st.sidebar.write("---")
     st.sidebar.header("Historique")
+
     disp_cols = ["Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût", "Transcription", "Date"]
     if not hist_df.empty:
         show_cols = [c for c in disp_cols if c in hist_df.columns]
