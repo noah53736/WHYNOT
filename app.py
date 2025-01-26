@@ -6,6 +6,8 @@ import time
 from pydub import AudioSegment
 import shutil
 import pandas as pd
+import random
+import string
 
 # === Configuration FFMPEG / FFPROBE ===
 # Force pydub à utiliser le ffmpeg/ffprobe installé via packages.txt
@@ -252,6 +254,12 @@ def main():
             st.write("Transcription en cours...")
             start_time = time.time()
 
+            # Lire la clé API depuis les secrets
+            dg_key = st.secrets.get("NOVA", "")
+            if not dg_key:
+                st.error("La clé API 'NOVA' n'est pas configurée. Ajoute-la dans les secrets Streamlit.")
+                st.stop()
+
             # Transcription avec Deepgram
             transcription = transcribe_nova_one_shot(
                 file_bytes=audio_data,
@@ -274,6 +282,15 @@ def main():
                     file_name="transcription.txt",
                     mime="text/plain"
                 )
+
+                # Optionnel : Retirer "euh"
+                remove_euh_box = st.checkbox("Retirer 'euh' ?", False)
+                if remove_euh_box:
+                    new_txt, ccc = remove_euh_in_text(transcription)
+                    transcription = new_txt
+                    st.write(f"({ccc} occurrences de 'euh' retirées)")
+                    st.write("### Résultat après suppression de 'euh'")
+                    st.write(transcription)
             else:
                 st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
         except Exception as e:
