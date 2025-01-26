@@ -23,4 +23,5 @@ pyarrow==10.0.0
 
 # === Google Sheets ===
 gspread==5.7.0
-google-auth>=2.16.0,<3.0.0
+# Retiré la ligne suivante pour éviter le conflit
+# google-auth>=2.16.0,<3.0.0
