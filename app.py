@@ -1,15 +1,18 @@
 import streamlit as st
 import os
 import io
-from pydub import AudioSegment
 import requests
 import time
+from pydub import AudioSegment
+import shutil
 
-# ============================
-# Constants & Setup
-# ============================
-DG_MODELS = ["nova-2", "whisper-large"]  # Modèles disponibles
-DEFAULT_LANGUAGE = "fr"  # Langue par défaut
+# Optionnel : définir explicitement où se trouvent ffmpeg / ffprobe
+# (Si la config de Streamlit Cloud ne trouve pas ffprobe par défaut)
+AudioSegment.converter = shutil.which("ffmpeg")
+AudioSegment.ffprobe   = shutil.which("ffprobe")
+
+DG_MODELS = ["nova-2", "whisper-large"]  # Modèles Deepgram disponibles
+DEFAULT_LANGUAGE = "fr"
 LANGUAGE_MAP = {
     "fr": "fr",
     "french": "fr",
@@ -21,18 +24,13 @@ LANGUAGE_MAP = {
 
 st.set_page_config(page_title="Deepgram Transcription App", layout="wide")
 
-
-# ============================
-# Helper Functions
-# ============================
 def normalize_language(input_lang: str) -> str:
     """
-    Normalise la langue saisie (indépendant de la casse ou des variantes).
-    Retourne 'fr' pour français et 'en-US' pour anglais.
+    Normalise la langue saisie (en 'fr' ou 'en-US').
+    Retourne 'fr' si rien n'est trouvé.
     """
     input_lang = input_lang.strip().lower()
-    return LANGUAGE_MAP.get(input_lang, DEFAULT_LANGUAGE)  # Langue par défaut si la saisie est invalide.
-
+    return LANGUAGE_MAP.get(input_lang, DEFAULT_LANGUAGE)
 
 def transcribe_deepgram(file_bytes: bytes, api_key: str, model_name: str, language: str) -> str:
     """
@@ -40,15 +38,16 @@ def transcribe_deepgram(file_bytes: bytes, api_key: str, model_name: str, langua
     Convertit au préalable l'audio en PCM mono 16kHz.
     """
     try:
-        # On convertit le flux binaire en WAV 16kHz mono
         temp_in = "temp_dg_in.wav"
+
+        # Conversion en 16kHz mono WAV
         seg = AudioSegment.from_file(io.BytesIO(file_bytes))
         seg_16k = seg.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         seg_16k.export(temp_in, format="wav")
 
-        # Prépare la requête API Deepgram
         params = f"?model={model_name}&language={language}&punctuate=true&numerals=true"
         url = f"https://api.deepgram.com/v1/listen{params}"
+
         with open(temp_in, "rb") as f:
             payload = f.read()
 
@@ -58,7 +57,7 @@ def transcribe_deepgram(file_bytes: bytes, api_key: str, model_name: str, langua
         }
         response = requests.post(url, headers=headers, data=payload)
 
-        # Nettoyage du fichier temporaire
+        # Nettoyage
         try:
             os.remove(temp_in)
         except:
@@ -79,73 +78,67 @@ def transcribe_deepgram(file_bytes: bytes, api_key: str, model_name: str, langua
         st.error(f"Erreur pendant la transcription : {e}")
         return ""
 
-
-# ============================
-# Main App
-# ============================
 def main():
     st.title("Deepgram Transcription App")
 
-    # Lecture de la clé API depuis secrets (NOVA)
-    # Assure-toi d'avoir "NOVA" dans tes secrets Streamlit
+    # Lecture de la clé depuis les Secrets (Streamlit Cloud)
     dg_key = st.secrets.get("NOVA", "")
     if not dg_key:
-        st.error("La clé API 'NOVA' n'est pas configurée. Ajoutez-la dans les secrets Streamlit.")
+        st.error("Clé 'NOVA' manquante dans les secrets Streamlit.")
         st.stop()
 
-    # Choix des options
     st.sidebar.header("Options Deepgram")
-    chosen_model = st.sidebar.selectbox("Choisissez un modèle", DG_MODELS, index=0)
-    input_language = st.sidebar.text_input("Code langue (ex : 'fr' ou 'en')", value=DEFAULT_LANGUAGE)
+    chosen_model = st.sidebar.selectbox("Modèle Deepgram", DG_MODELS, index=0)
+    input_language = st.sidebar.text_input("Langue (fr / en)", value=DEFAULT_LANGUAGE)
     language = normalize_language(input_language)
 
     st.write(f"**Modèle choisi** : {chosen_model}")
     st.write(f"**Langue choisie** : {language}")
 
-    # Chargement ou enregistrement d'audio
-    st.write("## Téléchargez un fichier audio ou enregistrez depuis le microphone")
-    input_choice = st.radio("Choisissez une méthode d'entrée :", ["Télécharger un fichier", "Microphone"])
+    st.write("## 1) Charger ou enregistrer un fichier audio")
+    mode = st.radio("Choisissez une méthode :", ["Télécharger un fichier", "Microphone"])
 
     audio_data = None
-    if input_choice == "Télécharger un fichier":
+    if mode == "Télécharger un fichier":
         uploaded_file = st.file_uploader(
-            "Fichier audio (formats : mp3, wav, m4a, ogg, webm)",
+            "Formats acceptés : mp3, wav, m4a, ogg, webm",
             type=["mp3", "wav", "m4a", "ogg", "webm"]
         )
         if uploaded_file:
             audio_data = uploaded_file.read()
             st.audio(uploaded_file)
     else:
-        # L'API st.audio_input est disponible sur Streamlit Cloud récent (>= v1.25)
-        mic_input = st.audio_input("Enregistrez un audio via le micro")
-        if mic_input:
-            audio_data = mic_input.read()
-            st.audio(mic_input)
+        # Le micro Streamlit (depuis la v1.25)
+        mic = st.audio_input("Enregistrements audio")
+        if mic:
+            audio_data = mic.read()
+            st.audio(mic)
 
-    # Bouton "Transcrire"
     if audio_data and st.button("Transcrire"):
         st.write("Transcription en cours...")
         start_time = time.time()
 
-        # Transcription avec Deepgram
-        transcription = transcribe_deepgram(audio_data, dg_key, chosen_model, language)
+        transcription = transcribe_deepgram(
+            file_bytes=audio_data,
+            api_key=dg_key,
+            model_name=chosen_model,
+            language=language
+        )
 
-        elapsed_time = time.time() - start_time
+        duration = time.time() - start_time
         if transcription:
-            st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
+            st.success(f"Transcription OK en {duration:.2f} sec.")
             st.subheader("Résultat")
             st.write(transcription)
 
-            # Bouton pour télécharger la transcription
             st.download_button(
-                "Télécharger la transcription",
+                label="Télécharger le texte",
                 data=transcription,
                 file_name="transcription.txt",
                 mime="text/plain"
             )
         else:
-            st.warning("Aucune transcription retournée. Vérifiez les logs ci-dessus.")
-
+            st.warning("La transcription est vide ou a échoué.")
 
 if __name__ == "__main__":
     main()
