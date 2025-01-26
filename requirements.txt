@@ -21,6 +21,6 @@ altair==4.2.2
 # === PyArrow ===
 pyarrow==10.0.0
 
-# === Google Sheets (Optionnel) ===
+# === Google Sheets ===
 gspread==5.7.0
 google-auth>=2.16.0,<3.0.0
