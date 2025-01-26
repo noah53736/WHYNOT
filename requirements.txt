@@ -12,5 +12,8 @@ ffmpeg-python
 # === Web Requests ===
 requests
 
+# === Deepgram ===
+deepgram-sdk
+
 # === Visualisation (pour éviter l'erreur Altair) ===
 altair==4.2.2
