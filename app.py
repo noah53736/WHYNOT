@@ -1,89 +1,40 @@
 import streamlit as st
+import pandas as pd
 import os
 import io
-import requests
 import time
-from pydub import AudioSegment, silence
-import shutil
-import pandas as pd
 import random
 import string
 import subprocess
+from datetime import datetime
+import requests
 
-# === Configuration FFMPEG / FFPROBE ===
-# Force pydub à utiliser le ffmpeg/ffprobe installé via packages.txt
-AudioSegment.converter = shutil.which("ffmpeg")
-AudioSegment.ffprobe = shutil.which("ffprobe")
+from pydub import AudioSegment, silence
 
-# === Fonction de Transcription Nova (DeepGram) ===
-def transcribe_nova_one_shot(
-    file_bytes: bytes,
-    dg_api_key: str,      # la clé Nova (NOVA / NOVA2 / NOVA3)
-    language: str = "fr",
-    model_name: str = "nova-2",
-    punctuate: bool = True,
-    numerals: bool = True
-) -> str:
-    """
-    Envoie les données audio à Deepgram (Nova) et retourne la transcription (str).
-    Convertit au préalable l'audio en PCM mono 16kHz.
-    """
-    try:
-        # Conversion en 16kHz mono WAV
-        temp_in = "temp_nova_in.wav"
-        seg = AudioSegment.from_file(io.BytesIO(file_bytes))
-        seg_16k = seg.set_frame_rate(16000).set_channels(1).set_sample_width(2)
-        seg_16k.export(temp_in, format="wav")
+import nova_api  # Assure-toi que `nova_api.py` est dans le même répertoire
 
-        # Préparation des paramètres de la requête
-        params = []
-        params.append(f"language={language}")
-        params.append(f"model={model_name}")
-        if punctuate:
-            params.append("punctuate=true")
-        if numerals:
-            params.append("numerals=true")
-
-        qs = "?" + "&".join(params)
-        url = f"https://api.deepgram.com/v1/listen{qs}"
-
-        # Envoi de la requête à Deepgram
-        with open(temp_in, "rb") as f:
-            payload = f.read()
-
-        headers = {
-            "Authorization": f"Token {dg_api_key}",
-            "Content-Type": "audio/wav"
-        }
-        response = requests.post(url, headers=headers, data=payload)
-
-        # Nettoyage du fichier temporaire
-        os.remove(temp_in)
-
-        if response.status_code == 200:
-            result = response.json()
-            transcript = (
-                result.get("results", {})
-                      .get("channels", [{}])[0]
-                      .get("alternatives", [{}])[0]
-                      .get("transcript", "")
-            )
-            return transcript
-        else:
-            st.error(f"[Nova] Erreur {response.status_code} : {response.text}")
-            return ""
-    except Exception as e:
-        st.error(f"Erreur pendant la transcription : {e}")
-        return ""
-
-# === Gestion de l'Historique ===
+###############################################################################
+# CONSTANTES
+###############################################################################
 HISTORY_FILE = "historique.csv"
 
+# Paramètres "silence"
+MIN_SIL_MS = 700
+SIL_THRESH_DB = -35
+KEEP_SIL_MS = 50
+CROSSFADE_MS = 50
+
+# Coûts (ajuster selon ta tarification réelle)
+NOVA_COST_PER_MINUTE = 0.007
+
+###############################################################################
+# HISTORIQUE
+###############################################################################
 def init_history():
     if not os.path.exists(HISTORY_FILE):
         df_init = pd.DataFrame(columns=[
-            "Alias","Méthode","Modèle","Durée","Temps","Coût",
-            "Transcription","Date","Audio Binaire"
+            "Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût",
+            "Transcription", "Date", "Audio Binaire"
         ])
         df_init.to_csv(HISTORY_FILE, index=False)
 
@@ -110,16 +61,12 @@ def human_time(sec: float) -> str:
         m, s = divmod(r, 60)
         return f"{h}h{m}m{s}s"
 
-# === Accélération (Time-Stretch) ===
+###############################################################################
+# ACCELERATION (TIME-STRETCH)
+###############################################################################
 def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
-    """
-    Accélère ou ralentit le signal via ffmpeg (atempo).
-    factor=2 => x2 plus rapide
-    factor=0.5 => 2x plus lent
-    """
     if abs(factor - 1.0) < 1e-2:
-        return audio_seg  # Pas de changement
-
+        return audio_seg
     tmp_in = "temp_acc_in.wav"
     tmp_out = "temp_acc_out.wav"
     audio_seg.export(tmp_in, format="wav")
@@ -150,21 +97,14 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
         pass
     return new_seg
 
-# === Suppression de Silences (Douce) ===
-MIN_SIL_MS = 700
-SIL_THRESH_DB = -35
-KEEP_SIL_MS = 50
-CROSSFADE_MS = 50
-
+###############################################################################
+# SUPPRESSION SILENCES "douce"
+###############################################################################
 def remove_silences_smooth(audio_seg: AudioSegment,
                            min_sil_len=MIN_SIL_MS,
                            silence_thresh=SIL_THRESH_DB,
                            keep_sil_ms=KEEP_SIL_MS,
                            crossfade_ms=CROSSFADE_MS):
-    """
-    Découpe la piste sur les silences, puis recolle le tout
-    en fondant les transitions (crossfade).
-    """
     segs = silence.split_on_silence(
         audio_seg,
         min_sil_len=min_sil_len,
@@ -172,17 +112,18 @@ def remove_silences_smooth(audio_seg: AudioSegment,
         keep_silence=keep_sil_ms
     )
     if not segs:
-        return audio_seg  # Rien trouvé, ou piste vide
-
+        return audio_seg
     combined = segs[0]
     for s in segs[1:]:
         combined = combined.append(s, crossfade=crossfade_ms)
     return combined
 
-# === Main Streamlit App ===
+###############################################################################
+# MAIN STREAMLIT APP
+###############################################################################
 def main():
-    st.set_page_config(page_title="Deepgram Transcription App", layout="wide")
-    st.title("Deepgram Transcription App")
+    st.set_page_config(page_title="NBL Audio", layout="wide")
+    st.title("NBL Audio – Transcription Audio")
 
     # Initialiser / Charger l'historique
     if "hist_df" not in st.session_state:
@@ -191,14 +132,14 @@ def main():
     hist_df = st.session_state["hist_df"]
 
     # === Options de Transcription ===
-    st.sidebar.header("Options Deepgram")
+    st.sidebar.header("Options Transcription")
 
     # Mapping des clés API à leurs modèles respectifs
     # Ajuste ce dictionnaire selon tes clés et modèles
     api_model_mapping = {
         "NOVA": "nova-2",
         "NOVA2": "whisper-large",
-        # Ajoute d'autres clés si nécessaire
+        "NOVA3": "whisper-large",  # Ajoute d'autres clés si nécessaire
     }
 
     # Récupérer toutes les clés API définies dans les secrets
@@ -242,44 +183,73 @@ def main():
     st.write(f"**Modèle utilisé** : {chosen_model}")
     st.write(f"**Langue choisie** : {language}")
 
-    # === Téléchargement ou Enregistrement Audio ===
-    st.write("## Téléchargez un fichier audio ou enregistrez depuis le microphone")
-    input_choice = st.radio("Choisissez une méthode d'entrée :", ["Télécharger un fichier", "Microphone"])
+    # === Transformations ===
+    st.sidebar.write("---")
+    st.sidebar.header("Transformations")
+    remove_sil = st.sidebar.checkbox("Supprimer silences (douce)", False)
+    speed_factor = st.sidebar.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
 
+    # === Téléchargement ou Enregistrement Audio ===
+    st.write("## Source Audio")
     audio_data = None
-    if input_choice == "Télécharger un fichier":
-        uploaded_file = st.file_uploader(
-            "Téléchargez un fichier audio (formats acceptés : mp3, wav, m4a, ogg, webm)",
-            type=["mp3", "wav", "m4a", "ogg", "webm"]
-        )
+    input_choice = st.radio("Fichier ou Micro ?", ["Fichier", "Micro"])
+    if input_choice == "Fichier":
+        uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
+                                        type=["mp3", "wav", "m4a", "ogg", "webm"])
         if uploaded_file:
             audio_data = uploaded_file.read()
             st.audio(uploaded_file)
-    elif input_choice == "Microphone":
-        mic_input = st.audio_input("Enregistrez un audio via le micro")
+    else:
+        mic_input = st.audio_input("Enregistrement micro")
         if mic_input:
             audio_data = mic_input.read()
             st.audio(mic_input)
+
+    # === Prétraitement Audio ===
+    if audio_data:
+        try:
+            with open("temp_original.wav", "wb") as foo:
+                foo.write(audio_data)
+
+            aud = AudioSegment.from_file("temp_original.wav")
+            original_sec = len(aud) / 1000.0
+            st.write(f"Durée d'origine : {human_time(original_sec)}")
+
+            final_aud = aud
+            if remove_sil:
+                final_aud = remove_silences_smooth(final_aud)
+            if abs(speed_factor - 1.0) > 1e-2:
+                final_aud = accelerate_ffmpeg(final_aud, speed_factor)
+
+            bufp = io.BytesIO()
+            final_aud.export(bufp, format="wav")
+            st.write("### Aperçu Audio transformé")
+            st.audio(bufp.getvalue(), format="audio/wav")
+
+        except Exception as e:
+            st.error(f"Erreur chargement/preproc : {e}")
 
     # === Transcription ===
     if audio_data and st.button("Transcrire"):
         try:
             st.write("Transcription en cours...")
-            start_time = time.time()
+            start_t = time.time()
 
             # **Vérification de la Clé API**
             st.write(f"Longueur de la clé API lue : {len(dg_key)} caractères")
 
             # Transcription avec Deepgram
-            transcription = transcribe_nova_one_shot(
+            transcription = nova_api.transcribe_nova_one_shot(
                 file_bytes=audio_data,
                 dg_api_key=dg_key,
                 model_name=chosen_model,
-                language=language
+                language=language,
+                punctuate=True,
+                numerals=True
             )
 
             # Affichage des Résultats
-            elapsed_time = time.time() - start_time
+            elapsed_time = time.time() - start_t
             if transcription:
                 st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
                 st.subheader("Résultat de la transcription")
@@ -293,30 +263,48 @@ def main():
                     mime="text/plain"
                 )
 
-                # Enregistrer dans l'historique
-                alias = generate_alias()
-                method = input_choice
-                duration = human_time(elapsed_time)
-                current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                # Coût estimé (ajuster selon ta tarification DeepGram)
-                # Par exemple, supposons 0.01€ par minute
-                cost = round(elapsed_time / 60 * 0.01, 4)
+                # Calcul du coût
+                mn = original_sec / 60.0
+                cost_val = round(mn * NOVA_COST_PER_MINUTE, 4)
+                cost_str = f"{cost_val} €"
 
-                new_entry = {
+                # Temps effectif
+                total_proc = elapsed_time
+                total_str = human_time(total_proc)
+
+                # Gains en temps
+                gain_sec = 0
+                final_sec = len(final_aud) / 1000.0
+                if final_sec < original_sec:
+                    gain_sec = original_sec - final_sec
+                gain_str = human_time(gain_sec)
+
+                st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
+                         f"Temps effectif: {total_str} | Coût={cost_str}")
+
+                # Enregistrer dans l'historique
+                alias = generate_alias(6)
+                audio_buf = audio_data  # Directement utiliser les bytes
+
+                new_row = {
                     "Alias": alias,
-                    "Méthode": method,
+                    "Méthode": "Nova (Deepgram)",
                     "Modèle": chosen_model,
-                    "Durée": duration,
-                    "Temps": elapsed_time,
-                    "Coût": cost,
+                    "Durée": f"{human_time(original_sec)}",
+                    "Temps": total_str,
+                    "Coût": cost_str,
                     "Transcription": transcription,
-                    "Date": current_time,
-                    "Audio Binaire": audio_data
+                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Audio Binaire": audio_buf
                 }
 
-                # Ajouter la nouvelle entrée à l'historique
-                st.session_state["hist_df"] = st.session_state["hist_df"].append(new_entry, ignore_index=True)
-                save_history(st.session_state["hist_df"])
+                # Utiliser pd.concat au lieu de append
+                new_df = pd.DataFrame([new_row])
+                hist_df = pd.concat([hist_df, new_df], ignore_index=True)
+                st.session_state["hist_df"] = hist_df
+                save_history(hist_df)
+
+                st.info(f"Historique mis à jour. Alias={alias}")
 
             else:
                 st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
