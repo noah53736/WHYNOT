@@ -1,7 +1,7 @@
 # === Streamlit + Data Science ===
 streamlit>=1.25.0
-pandas>=1.5.0,<2.0.0
-numpy
+pandas==1.5.3
+numpy==1.23.5
 
 # === Audio ===
 pydub==0.25.1
@@ -15,8 +15,12 @@ requests
 # === Deepgram ===
 deepgram-sdk
 
-# === Visualisation (pour éviter l'erreur Altair) ===
+# === Visualisation ===
 altair==4.2.2
 
 # === PyArrow ===
-pyarrow>=10.0.0
+pyarrow==10.0.0
+
+# === Google Sheets (Optionnel) ===
+gspread==5.7.0
+google-auth==2.16.2
