@@ -39,7 +39,7 @@ def transcribe_segment(
     model_name: str,
     punctuate: bool,
     numerals: bool
-) -> str:
+) -> (str, float):
     """
     Transcrit un segment audio en utilisant une clé API spécifique.
     """
