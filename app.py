@@ -1,3 +1,5 @@
+# app.py
+
 import streamlit as st
 import pandas as pd
 import os
@@ -5,9 +7,9 @@ import io
 import time
 import random
 import string
-import subprocess
 from datetime import datetime
-import requests
+import json
+import matplotlib.pyplot as plt
 
 from pydub import AudioSegment, silence
 
@@ -17,6 +19,7 @@ import nova_api  # Assure-toi que `nova_api.py` est dans le même répertoire
 # CONSTANTES
 ###############################################################################
 HISTORY_FILE = "historique.csv"
+CREDITS_FILE = "credits.json"
 
 # Paramètres "silence"
 MIN_SIL_MS = 700
@@ -24,11 +27,8 @@ SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
 CROSSFADE_MS = 50
 
-# Coûts (ajuster selon ta tarification réelle)
-NOVA_COST_PER_MINUTE = 0.007
-
 ###############################################################################
-# HISTORIQUE
+# UTILITAIRES
 ###############################################################################
 def init_history():
     if not os.path.exists(HISTORY_FILE):
@@ -119,6 +119,37 @@ def remove_silences_smooth(audio_seg: AudioSegment,
     return combined
 
 ###############################################################################
+# LOAD CREDITS
+###############################################################################
+def load_credits():
+    if os.path.exists(CREDITS_FILE):
+        with open(CREDITS_FILE, "r") as f:
+            credits = json.load(f)
+    else:
+        # Initialiser les crédits si le fichier n'existe pas
+        credits = {}
+    return credits
+
+def save_credits(credits):
+    with open(CREDITS_FILE, "w") as f:
+        json.dump(credits, f, indent=4)
+
+###############################################################################
+# GRAPH CRÉDITS
+###############################################################################
+def plot_credits(credits):
+    total_credit = sum(credits.values())
+    remaining_credit = sum([credit for credit in credits.values()])
+
+    labels = ['Crédit Total', 'Crédit Restant']
+    sizes = [total_credit, remaining_credit]
+    colors = ['#ff9999','#66b3ff']
+    fig, ax = plt.subplots()
+    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+    ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+    st.pyplot(fig)
+
+###############################################################################
 # MAIN STREAMLIT APP
 ###############################################################################
 def main():
@@ -131,57 +162,51 @@ def main():
         st.session_state["hist_df"] = df
     hist_df = st.session_state["hist_df"]
 
+    # Charger les crédits
+    credits = load_credits()
+
     # === Options de Transcription ===
     st.sidebar.header("Options Transcription")
 
-    # Mapping des clés API à leurs modèles respectifs
-    # Ajuste ce dictionnaire selon tes clés et modèles
-    api_model_mapping = {
-        "NOVA": "nova-2",
-        "NOVA2": "whisper-large",
-        "NOVA3": "whisper-large",  # Ajoute d'autres clés si nécessaire
-    }
+    # Charger les clés API depuis les secrets
+    api_keys = []
+    key_ids = []
+    for key in st.secrets:
+        if key.startswith("NOVA"):
+            api_keys.append(st.secrets[key])
+            key_ids.append(key)
 
-    # Récupérer toutes les clés API définies dans les secrets
-    available_keys = [key for key in st.secrets.keys() if key.startswith("NOVA")]
-
-    if not available_keys:
-        st.sidebar.error("Aucune clé API DeepGram (NOVA) trouvée dans les secrets.")
+    if not api_keys:
+        st.sidebar.error("Aucune clé API DeepGram trouvée dans les secrets.")
         st.stop()
 
-    chosen_key = st.sidebar.selectbox("Choisissez une clé API DeepGram", available_keys)
+    # Filtrer les clés API avec crédit suffisant
+    selectable_keys = []
+    key_number_mapping = {}  # Mapping de label à clé réelle
+    for i, key_id in enumerate(key_ids):
+        remaining = credits.get(key_id, 0)
+        if remaining > 0:
+            label = f"API Key {i+1}"
+            selectable_keys.append(label)
+            key_number_mapping[label] = key_id
 
-    # Déterminer le modèle en fonction de la clé choisie
-    chosen_model = api_model_mapping.get(chosen_key, "nova-2")  # Modèle par défaut si non trouvé
+    if not selectable_keys:
+        st.sidebar.error("Toutes les clés API sont épuisées.")
+        st.stop()
 
-    # Lire la clé API depuis les secrets
-    dg_key = st.secrets[chosen_key]
+    # Sélectionner la clé API à utiliser (Failover automatique)
+    # L'utilisateur ne sélectionne pas manuellement, le système sélectionne automatiquement
+    # En cas d'échec, le système passe à la clé suivante
+    # Ainsi, on ne présente pas un choix à l'utilisateur mais on gère automatiquement
 
-    # Déterminer la langue
-    DEFAULT_LANGUAGE = "fr"
-    LANGUAGE_MAP = {
-        "fr": "fr",
-        "french": "fr",
-        "f": "fr",
-        "en": "en-US",
-        "english": "en-US",
-        "e": "en-US"
-    }
-    input_language = st.sidebar.text_input("Code langue (ex : 'fr' ou 'en')", value=DEFAULT_LANGUAGE)
-
-    def normalize_language(input_lang: str) -> str:
-        """
-        Normalise la langue saisie (indépendant de la casse ou des variantes).
-        Retourne 'fr' pour français et 'en-US' pour anglais.
-        """
-        input_lang = input_lang.strip().lower()
-        return LANGUAGE_MAP.get(input_lang, DEFAULT_LANGUAGE)  # Langue par défaut si la saisie est invalide.
-
-    language = normalize_language(input_language)
-
-    st.write(f"**Clé API utilisée** : {chosen_key}")
-    st.write(f"**Modèle utilisé** : {chosen_model}")
-    st.write(f"**Langue choisie** : {language}")
+    # Afficher le crédit total et restant
+    total_credit = sum(credits.values())
+    remaining_credit = sum([credit for credit in credits.values()])
+    st.sidebar.subheader("Crédits")
+    st.sidebar.progress(remaining_credit / total_credit if total_credit > 0 else 0)
+    st.sidebar.write(f"**Total Crédit**: ${total_credit:.2f}")
+    st.sidebar.write(f"**Crédit Restant**: ${remaining_credit:.2f}")
+    plot_credits(credits)
 
     # === Transformations ===
     st.sidebar.write("---")
@@ -235,20 +260,26 @@ def main():
             st.write("Transcription en cours...")
             start_t = time.time()
 
-            # **Vérification de la Clé API**
-            st.write(f"Longueur de la clé API lue : {len(dg_key)} caractères")
+            # Charger les crédits
+            credits = load_credits()
 
-            # Transcription avec Deepgram
-            transcription = nova_api.transcribe_nova_one_shot(
+            # Liste des clés API ordonnées
+            ordered_keys = sorted(key_ids, key=lambda x: int(x.replace("NOVA", "")))
+
+            # Extraire les clés API dans l'ordre
+            ordered_api_keys = [st.secrets[key] for key in ordered_keys]
+
+            # Transcription avec Failover
+            transcription, used_key, cost = nova_api.transcribe_nova_one_shot(
                 file_bytes=audio_data,
-                dg_api_key=dg_key,
-                model_name=chosen_model,
-                language=language,
+                api_keys=ordered_api_keys,
+                language="fr",  # Modifier selon tes besoins
+                model_name="whisper-large",  # Modifier selon tes besoins
                 punctuate=True,
-                numerals=True
+                numerals=True,
+                credits=credits
             )
 
-            # Affichage des Résultats
             elapsed_time = time.time() - start_t
             if transcription:
                 st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
@@ -263,24 +294,23 @@ def main():
                     mime="text/plain"
                 )
 
-                # Calcul du coût
-                mn = original_sec / 60.0
-                cost_val = round(mn * NOVA_COST_PER_MINUTE, 4)
-                cost_str = f"{cost_val} €"
-
-                # Temps effectif
-                total_proc = elapsed_time
-                total_str = human_time(total_proc)
-
-                # Gains en temps
+                # Calcul des gains en temps
                 gain_sec = 0
                 final_sec = len(final_aud) / 1000.0
                 if final_sec < original_sec:
                     gain_sec = original_sec - final_sec
                 gain_str = human_time(gain_sec)
 
+                # Affichage des Informations
                 st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
-                         f"Temps effectif: {total_str} | Coût={cost_str}")
+                         f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost:.2f}")
+
+                # Identifier quelle API Key a été utilisée
+                if used_key in key_ids:
+                    api_key_number = key_ids.index(used_key) + 1
+                    st.write(f"**Clé API utilisée** : API Key {api_key_number}")
+                else:
+                    st.write(f"**Clé API utilisée** : {used_key}")
 
                 # Enregistrer dans l'historique
                 alias = generate_alias(6)
@@ -289,10 +319,10 @@ def main():
                 new_row = {
                     "Alias": alias,
                     "Méthode": "Nova (Deepgram)",
-                    "Modèle": chosen_model,
+                    "Modèle": "whisper-large",
                     "Durée": f"{human_time(original_sec)}",
-                    "Temps": total_str,
-                    "Coût": cost_str,
+                    "Temps": human_time(elapsed_time),
+                    "Coût": f"${cost:.2f}",
                     "Transcription": transcription,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "Audio Binaire": audio_buf
@@ -305,6 +335,9 @@ def main():
                 save_history(hist_df)
 
                 st.info(f"Historique mis à jour. Alias={alias}")
+
+                # Rafraîchir les crédits affichés
+                plot_credits(credits)
 
             else:
                 st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
