@@ -3,11 +3,12 @@ import os
 import io
 import requests
 import time
-from pydub import AudioSegment
+from pydub import AudioSegment, silence
 import shutil
 import pandas as pd
 import random
 import string
+import subprocess
 
 # === Configuration FFMPEG / FFPROBE ===
 # Force pydub à utiliser le ffmpeg/ffprobe installé via packages.txt
@@ -259,6 +260,9 @@ def main():
             if not dg_key:
                 st.error("La clé API 'NOVA' n'est pas configurée. Ajoute-la dans les secrets Streamlit.")
                 st.stop()
+
+            # **Vérification de la Clé API**
+            st.write(f"Longueur de la clé API lue : {len(dg_key)} caractères")
 
             # Transcription avec Deepgram
             transcription = transcribe_nova_one_shot(
