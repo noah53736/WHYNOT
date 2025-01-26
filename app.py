@@ -1,245 +1,132 @@
 import streamlit as st
 import os
 import io
-import random
-import string
-import time
-import subprocess
-
-from datetime import datetime
-from pydub import AudioSegment, silence
+from pydub import AudioSegment
 import requests
+import time
 
 # ============================
 # Constants & Setup
 # ============================
-DG_MODELS = [
-    "nova-2",
-    "whisper-base",
-    "whisper-medium",
-    "whisper-large",
-]
+DG_MODELS = ["nova-2", "whisper-large"]  # Modèles disponibles
+DEFAULT_LANGUAGE = "fr"  # Langue par défaut
+LANGUAGE_MAP = {
+    "fr": "fr",
+    "french": "fr",
+    "f": "fr",
+    "en": "en-US",
+    "english": "en-US",
+    "e": "en-US"
+}
+DG_COST_PER_MINUTE = 0.007  # Coût par minute de transcription, ajustable si nécessaire
 
-DG_COST_PER_MINUTE = 0.007  # e.g. $0.007/min for Nova. Adjust or remove if you don't want cost tracking.
-
-st.set_page_config(page_title="Deepgram Audio Transcriber", layout="wide")
+st.set_page_config(page_title="Deepgram Transcription App", layout="wide")
 
 
 # ============================
 # Helper Functions
 # ============================
-def generate_alias(length=5):
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
+def normalize_language(input_lang: str) -> str:
+    """
+    Normalise la langue saisie (indépendant de la casse ou des variantes).
+    Retourne 'fr' pour français et 'en-US' pour anglais.
+    """
+    input_lang = input_lang.strip().lower()
+    return LANGUAGE_MAP.get(input_lang, DEFAULT_LANGUAGE)  # Langue par défaut si la saisie est invalide.
 
-def human_time(sec: float) -> str:
-    sec = int(sec)
-    if sec < 60:
-        return f"{sec}s"
-    elif sec < 3600:
-        m, s = divmod(sec, 60)
-        return f"{m}m{s}s"
-    else:
-        h, r = divmod(sec, 3600)
-        m, s = divmod(r, 60)
-        return f"{h}h{m}m{s}s"
 
-def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
-    """Accelerate or slow down audio using ffmpeg & pydub."""
-    if abs(factor - 1.0) < 1e-2:
-        return audio_seg
-    tmp_in  = "temp_in.wav"
-    tmp_out = "temp_out.wav"
-    audio_seg.export(tmp_in, format="wav")
-
-    remain= factor
-    filters = []
-    # If user picks >2.0 or <0.5, chain multiple 'atempo' filters
-    while remain > 2.0:
-        filters.append("atempo=2.0")
-        remain /= 2.0
-    while remain < 0.5:
-        filters.append("atempo=0.5")
-        remain /= 0.5
-    filters.append(f"atempo={remain}")
-    f_str = ",".join(filters)
-
-    cmd = ["ffmpeg", "-y", "-i", tmp_in, "-filter:a", f_str, tmp_out]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    new_seg = AudioSegment.from_file(tmp_out, format="wav")
-
-    # Clean up
+def transcribe_deepgram(file_bytes: bytes, api_key: str, model_name: str, language: str) -> str:
+    """
+    Envoie les données audio à Deepgram et retourne la transcription.
+    """
     try:
-        os.remove(tmp_in)
-        os.remove(tmp_out)
-    except:
-        pass
-    return new_seg
+        # Convertir en 16kHz mono PCM pour Deepgram
+        tmp_in = "temp_dg_in.wav"
+        seg = AudioSegment.from_file(io.BytesIO(file_bytes))
+        seg_16k = seg.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        seg_16k.export(tmp_in, format="wav")
 
-def remove_silences_smooth(audio_seg: AudioSegment) -> AudioSegment:
-    """Remove long silences with a crossfade for smoothness."""
-    MIN_SIL_MS = 700
-    SIL_THRESH_DB= -35
-    KEEP_SIL_MS=50
-    CROSSFADE_MS=50
+        # Requête API Deepgram
+        params = f"?model={model_name}&language={language}&punctuate=true&numerals=true"
+        url = f"https://api.deepgram.com/v1/listen{params}"
+        with open(tmp_in, "rb") as f:
+            payload = f.read()
 
-    segs = silence.split_on_silence(
-        audio_seg,
-        min_silence_len=MIN_SIL_MS,
-        silence_thresh=SIL_THRESH_DB,
-        keep_silence=KEEP_SIL_MS
-    )
-    if not segs:
-        return audio_seg
-    combined = segs[0]
-    for s in segs[1:]:
-        combined = combined.append(s, crossfade=CROSSFADE_MS)
-    return combined
+        headers = {
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "audio/wav"
+        }
+        response = requests.post(url, headers=headers, data=payload)
 
-def transcribe_deepgram(file_bytes: bytes,
-                        dg_api_key: str,
-                        model_name: str = "nova-2",
-                        language: str = "fr",
-                        punctuate: bool = True,
-                        numerals: bool = True) -> str:
-    """
-    Send audio data to Deepgram. 
-    Model can be 'nova-2' or 'whisper-large' etc.
-    Returns the transcript (str).
-    """
-    tmp_in = "temp_dg_in.wav"
-
-    # Convert user bytes to 16k mono PCM for best results
-    seg = AudioSegment.from_file(io.BytesIO(file_bytes))
-    seg_16k= seg.set_frame_rate(16000).set_channels(1).set_sample_width(2)
-    seg_16k.export(tmp_in, format="wav")
-
-    params = []
-    params.append(f"model={model_name}")
-    if language.strip():
-        params.append(f"language={language}")
-    if punctuate:
-        params.append("punctuate=true")
-    if numerals:
-        params.append("numerals=true")
-
-    qs= "?"+ "&".join(params)
-    url= "https://api.deepgram.com/v1/listen" + qs
-    with open(tmp_in,"rb") as f:
-        payload= f.read()
-
-    heads={
-        "Authorization": f"Token {dg_api_key}",
-        "Content-Type": "audio/wav"
-    }
-    resp= requests.post(url, headers=heads, data=payload)
-    if resp.status_code==200:
-        j= resp.json()
-        alt= j.get("results",{}).get("channels",[{}])[0].get("alternatives",[{}])[0]
-        return alt.get("transcript","")
-    else:
-        st.error(f"[Deepgram] HTTP {resp.status_code}: {resp.text}")
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("results", {}).get("channels", [{}])[0].get("alternatives", [{}])[0].get("transcript", "")
+        else:
+            st.error(f"[Deepgram Error] HTTP {response.status_code}: {response.text}")
+            return ""
+    except Exception as e:
+        st.error(f"Erreur pendant la transcription : {e}")
         return ""
 
+
 # ============================
-# MAIN APP
+# Main App
 # ============================
 def main():
     st.title("Deepgram Transcription App")
 
-    # 1) Acquire your Deepgram key from environment var 'NOVA'
-    dg_key = os.getenv("NOVA","")
+    # Lecture des clés API depuis les secrets Streamlit
+    dg_key = st.secrets.get("NOVA", "")
     if not dg_key:
-        st.error("No environment variable 'NOVA' found. Please set it to your Deepgram key.")
+        st.error("La clé API 'NOVA' n'est pas configurée. Ajoutez-la dans les secrets Streamlit.")
         st.stop()
 
-    # 2) Let user pick model
-    st.sidebar.header("Deepgram Model Options")
-    chosen_model = st.sidebar.selectbox("Model name", DG_MODELS, index=0)
-    language = st.sidebar.text_input("Language code", "fr")
-    do_punct = st.sidebar.checkbox("Punctuate?", True)
-    do_nums  = st.sidebar.checkbox("Numerals => digits?", True)
+    # Choix des options
+    st.sidebar.header("Options Deepgram")
+    chosen_model = st.sidebar.selectbox("Choisissez un modèle", DG_MODELS, index=0)
+    input_language = st.sidebar.text_input("Code langue (ex : 'fr' ou 'en')", value=DEFAULT_LANGUAGE)
+    language = normalize_language(input_language)
 
-    # 3) Audio transformations
-    st.sidebar.write("---")
-    st.sidebar.header("Transformations")
-    remove_sil = st.sidebar.checkbox("Remove silences (smooth)?", False)
-    speed_fac = st.sidebar.slider("Acceleration Factor", 0.5,4.0,1.0,0.1)
+    st.write(f"**Modèle choisi** : {chosen_model}")
+    st.write(f"**Langue choisie** : {language}")
 
-    # 4) Audio input method
-    st.write("## Audio Input")
-    input_choice = st.radio("Choose input:", ["Upload file", "Microphone"])
+    # Chargement ou enregistrement d'audio
+    st.write("## Téléchargez un fichier audio ou enregistrez depuis le microphone")
+    input_choice = st.radio("Choisissez une méthode d'entrée :", ["Télécharger un fichier", "Microphone"])
+
     audio_data = None
+    if input_choice == "Télécharger un fichier":
+        uploaded_file = st.file_uploader("Téléchargez un fichier audio (formats acceptés : mp3, wav, m4a, ogg, webm)", type=["mp3", "wav", "m4a", "ogg", "webm"])
+        if uploaded_file:
+            audio_data = uploaded_file.read()
+            st.audio(uploaded_file)
+    elif input_choice == "Microphone":
+        mic_input = st.audio_input("Enregistrez un audio via le micro")
+        if mic_input:
+            audio_data = mic_input.read()
+            st.audio(mic_input)
 
-    if input_choice=="Upload file":
-        upf = st.file_uploader("Upload an audio file", type=["mp3","wav","m4a","ogg","webm"])
-        if upf is not None:
-            audio_data = upf.read()
-            st.audio(upf)
-    else:
-        mic_in = st.audio_input("Record from mic")
-        if mic_in:
-            audio_data = mic_in.read()
-            st.audio(audio_data)
+    # Transcrire si l'audio est présent
+    if audio_data and st.button("Transcrire"):
+        try:
+            st.write("Transcription en cours...")
+            start_time = time.time()
 
-    # 5) If audio_data present, show transformations & transcribe button
-    if audio_data:
-        # Display a "Transform & Transcribe" button
-        if st.button("Transcribe Now"):
-            start_t= time.time()
+            # Transcription avec Deepgram
+            transcription = transcribe_deepgram(audio_data, dg_key, chosen_model, language)
 
-            # Transform
-            seg= AudioSegment.from_file(io.BytesIO(audio_data))
-            original_sec= len(seg)/1000.0
-            if remove_sil:
-                seg= remove_silences_smooth(seg)
-            if abs(speed_fac -1.0)>1e-2:
-                seg= accelerate_ffmpeg(seg, speed_fac)
+            # Résultats
+            elapsed_time = time.time() - start_time
+            st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
+            st.subheader("Résultat de la transcription")
+            st.write(transcription)
 
-            # Convert back to bytes
-            import io
-            bufp= io.BytesIO()
-            seg.export(bufp, format="wav")
-            new_bytes= bufp.getvalue()
-
-            # Transcribe with Deepgram
-            final_txt= transcribe_deepgram(
-                new_bytes,
-                dg_api_key= dg_key,
-                model_name= chosen_model,
-                language= language,
-                punctuate= do_punct,
-                numerals= do_nums
-            )
-
-            final_sec= len(seg)/1000.0
-            gain_s=0
-            if final_sec<original_sec:
-                gain_s= original_sec - final_sec
-
-            # Example cost
-            minutes= final_sec/60.0
-            cost_val= minutes * DG_COST_PER_MINUTE
-            cost_str= f"${cost_val:.3f}"
-
-            total_time= time.time()-start_t
-            time_str= human_time(total_time)
-            st.success(f"Transcribed in {time_str}, gain ~{human_time(gain_s)}, cost ~{cost_str}")
-
-            st.subheader("Transcription")
-            st.write(final_txt)
-
-            # Download button
-            st.download_button("Download Transcript",
-                data= final_txt.encode("utf-8"),
-                file_name="transcript.txt",
-                mime="text/plain"
-            )
-    else:
-        st.info("Please provide an audio file or record from your mic to transcribe.")
+            # Bouton pour télécharger la transcription
+            st.download_button("Télécharger la transcription", data=transcription, file_name="transcription.txt", mime="text/plain")
+        except Exception as e:
+            st.error(f"Erreur lors du traitement : {e}")
 
 
-def main_wrapper():
-    main()
-
+# Lancer l'application
 if __name__ == "__main__":
-    main_wrapper()
+    main()
