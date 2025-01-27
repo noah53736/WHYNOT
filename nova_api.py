@@ -8,15 +8,14 @@ from pydub import AudioSegment
 
 def transcribe_nova_one_shot(
     file_path: str,
-    dg_api_key: str,      # la clé Nova (NOVA / NOVA2 / NOVA3)
+    dg_api_key: str,      # La clé Nova (NOVA / NOVA2 / NOVA3)
     language: str = "fr",
     model_name: str = "nova-2",
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
     """
-    Envoie le fichier complet à Deepgram (Nova ou Whisper-Cloud).
-    Aucune utilisation d'OpenAI ici.
+    Envoie le fichier complet à Deepgram Nova.
     => Retourne la transcription (str).
     """
     temp_in = "temp_nova_in.wav"
