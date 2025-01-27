@@ -6,19 +6,19 @@ import streamlit as st
 import traceback
 from pydub import AudioSegment
 
-def transcribe_nova_one_shot(
+def transcribe_audio(
     file_path: str,
-    dg_api_key: str,      # La clé Nova (NOVA1, NOVA2, ..., NOVA15)
+    dg_api_key: str,      # La clé API DeepGram (NOVA1, NOVA2, ..., NOVA15)
     language: str = "fr",
     model_name: str = "nova-2",
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
     """
-    Envoie le fichier complet à DeepGram Nova.
-    => Retourne la transcription (str).
+    Envoie le fichier audio à DeepGram pour transcription.
+    Retourne la transcription en tant que chaîne de caractères.
     """
-    temp_in = "temp_nova_in.wav"
+    temp_in = "temp_audio.wav"
     try:
         audio = AudioSegment.from_file(file_path)
         audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
@@ -54,10 +54,10 @@ def transcribe_nova_one_shot(
             )
             return transcription
         else:
-            st.error(f"[Nova] Erreur {response.status_code} : {response.text}")
+            st.error(f"[DeepGram] Erreur {response.status_code} : {response.text}")
             return ""
     except Exception as e:
-        st.error(f"[Nova] Exception : {e}")
+        st.error(f"[DeepGram] Exception : {e}")
         traceback.print_exc()
         return ""
     finally:
