@@ -36,14 +36,13 @@ def transcribe_audio(
         response = requests.post(url, headers=headers, data=payload)
 
         if response.status_code == 200:
-            result = response.json()
-            transcription = (
-                result.get("results", {})
-                      .get("channels", [{}])[0]
-                      .get("alternatives", [{}])[0]
-                      .get("transcript", "")
+            j = response.json()
+            return (
+                j.get("results", {})
+                 .get("channels", [{}])[0]
+                 .get("alternatives", [{}])[0]
+                 .get("transcript", "")
             )
-            return transcription
         else:
             st.error(f"[DeepGram] Erreur {response.status_code} : {response.text}")
             return ""
