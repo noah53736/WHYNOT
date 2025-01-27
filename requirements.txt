@@ -1,27 +1,15 @@
-# === Build Tools ===
-setuptools>=65.0.0
-wheel>=0.40.0
-
-# === Streamlit + Data Science ===
+# === Streamlit ===
 streamlit>=1.25.0
-pandas==1.5.3
-numpy>=1.24.0
-pyarrow==10.0.0
 
-# === Audio ===
+# === DeepGram ===
+deepgram-sdk
+
+# === Audio Processing ===
 pydub==0.25.1
-librosa==0.10.0.post2
-soundfile==0.12.1
 ffmpeg-python
-torch
-torchaudio
 
 # === Web Requests ===
 requests
 
-# === Deepgram ===
-deepgram-sdk
-
-# === Librosa Dependencies ===
-numba>=0.56.0
-llvmlite>=0.38.0
+# === Visualization ===
+matplotlib>=3.5.0
