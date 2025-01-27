@@ -120,7 +120,7 @@ def remove_silences_classic(audio_seg: AudioSegment,
     return combined
 
 ###############################################################################
-# SELECTION AUTOMATIQUE DE LA CLÉ API
+# SELECTION AUTOMATIQUE DES CLÉS API
 ###############################################################################
 def select_api_keys(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC, used_keys=[]):
     cost = duration_sec * cost_per_sec
@@ -205,7 +205,7 @@ def main():
     input_container = st.container()
     with input_container:
         input_choice = st.radio("Fichier ou Micro ?", ["Fichier", "Micro"], key="input_choice")
-    
+
         if input_choice == "Fichier":
             uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
                                             type=["mp3", "wav", "m4a", "ogg", "webm"], key="uploaded_file")
@@ -334,10 +334,10 @@ def main():
 
                     # Afficher les transcriptions dans des champs de texte pour faciliter la copie
                     st.subheader("Résultat de la transcription Nova 2")
-                    st.text_area("Transcription Nova 2", transcription1, height=200)
+                    transcription1_area = st.text_area("Transcription Nova 2", transcription1, height=200)
 
                     st.subheader("Résultat de la transcription Whisper Large")
-                    st.text_area("Transcription Whisper Large", transcription2, height=200)
+                    transcription2_area = st.text_area("Transcription Whisper Large", transcription2, height=200)
 
                     # Boutons pour télécharger et copier les transcriptions
                     col_download1, col_copy1 = st.columns(2)
@@ -349,14 +349,7 @@ def main():
                             mime="text/plain"
                         )
                     with col_copy1:
-                        copy_button_html = f"""
-                            <button onclick="navigator.clipboard.writeText(`{transcription1}`).then(function() {{
-                                alert('Transcription Nova 2 copiée dans le presse-papiers!');
-                            }}, function(err) {{
-                                alert('Échec de la copie : ', err);
-                            }});">Copier Nova 2</button>
-                        """
-                        st.components.v1.html(copy_button_html)
+                        st.button("Copier Nova 2", on_click=lambda: copy_to_clipboard(transcription1))
 
                     col_download2, col_copy2 = st.columns(2)
                     with col_download2:
@@ -367,14 +360,7 @@ def main():
                             mime="text/plain"
                         )
                     with col_copy2:
-                        copy_button_html = f"""
-                            <button onclick="navigator.clipboard.writeText(`{transcription2}`).then(function() {{
-                                alert('Transcription Whisper Large copiée dans le presse-papiers!');
-                            }}, function(err) {{
-                                alert('Échec de la copie : ', err);
-                            }});">Copier Whisper Large</button>
-                        """
-                        st.components.v1.html(copy_button_html)
+                        st.button("Copier Whisper Large", on_click=lambda: copy_to_clipboard(transcription2))
 
                     # Calcul des gains en temps
                     gain_sec = 0
@@ -441,7 +427,7 @@ def main():
                     st.subheader("Résultat de la transcription")
                     
                     # Afficher la transcription dans un champ de texte pour faciliter la copie
-                    st.text_area("Transcription", transcription, height=200)
+                    transcription_area = st.text_area("Transcription", transcription, height=200)
 
                     # Boutons pour télécharger et copier la transcription
                     col_download, col_copy = st.columns(2)
@@ -453,14 +439,7 @@ def main():
                             mime="text/plain"
                         )
                     with col_copy:
-                        copy_button_html = f"""
-                            <button onclick="navigator.clipboard.writeText(`{transcription}`).then(function() {{
-                                alert('Transcription copiée dans le presse-papiers!');
-                            }}, function(err) {{
-                                alert('Échec de la copie : ', err);
-                            }});">Copier la transcription</button>
-                        """
-                        st.components.v1.html(copy_button_html)
+                        st.button("Copier la transcription", on_click=lambda: copy_to_clipboard(transcription))
 
                     # Calcul des gains en temps
                     gain_sec = 0
@@ -498,72 +477,92 @@ def main():
                     if os.path.exists("temp_input.wav"):
                         os.remove("temp_input.wav")
 
-    # === Gestion de l'Historique ===
-    st.sidebar.write("---")
-    st.sidebar.header("Historique")
+    ###############################################################################
+    # Copie dans le presse-papiers
+    ###############################################################################
+    def copy_to_clipboard(text):
+        # Utiliser un composant HTML avec JavaScript pour copier dans le presse-papiers
+        copy_button_html = f"""
+            <script>
+                function copyText(text) {{
+                    navigator.clipboard.writeText(text).then(function() {{
+                        alert('Transcription copiée dans le presse-papiers!');
+                    }}, function(err) {{
+                        alert('Échec de la copie : ' + err);
+                    }});
+                }}
+            </script>
+            <button onclick="copyText(`{text}`)">Copier</button>
+        """
+        st.components.v1.html(copy_button_html)
 
-    if history:
-        # Afficher l'historique sous forme de tableau compact
-        history_table = [
-            {
-                "Alias/Nom": entry["Alias/Nom"],
-                "Méthode": entry["Méthode"],
-                "Modèle": entry["Modèle"],
-                "Durée": entry["Durée"],
-                "Temps": entry["Temps"],
-                "Coût": entry["Coût"],
-                "Date": entry["Date"]
-            }
-            for entry in history
-        ]
-        st.sidebar.table(history_table[::-1])  # Afficher les plus récentes en haut
+    ###############################################################################
+    # Gestion de l'Historique
+    ###############################################################################
+    def display_history():
+        st.sidebar.write("---")
+        st.sidebar.header("Historique")
 
-        # Afficher les aperçus audio
-        st.sidebar.write("### Aperçus Audio")
-        for entry in reversed(history[-3:]):  # Afficher les 3 dernières transcriptions
-            st.sidebar.markdown(f"**{entry['Alias/Nom']}** – {entry['Date']}")
-            audio_bytes = bytes.fromhex(entry["Audio Binaire"])
-            st.sidebar.audio(audio_bytes, format="audio/wav")
-    else:
-        st.sidebar.info("Historique vide.")
+        if history:
+            # Afficher l'historique sous forme de tableau compact
+            history_table = [
+                {
+                    "Alias/Nom": entry["Alias/Nom"],
+                    "Méthode": entry["Méthode"],
+                    "Modèle": entry["Modèle"],
+                    "Durée": entry["Durée"],
+                    "Temps": entry["Temps"],
+                    "Coût": entry["Coût"],
+                    "Date": entry["Date"]
+                }
+                for entry in history
+            ]
+            st.sidebar.table(history_table[::-1])  # Afficher les plus récentes en haut
 
-    # === Options d'accessibilité additionnelles ===
-    # No additional options as accessibility is handled above
+            # Afficher les aperçus audio
+            st.sidebar.write("### Aperçus Audio")
+            for entry in reversed(history[-3:]):  # Afficher les 3 dernières transcriptions
+                st.sidebar.markdown(f"**{entry['Alias/Nom']}** – {entry['Date']}")
+                audio_bytes = bytes.fromhex(entry["Audio Binaire"])
+                st.sidebar.audio(audio_bytes, format="audio/wav")
+        else:
+            st.sidebar.info("Historique vide.")
 
-###############################################################################
-# FUNCTIONS FOR CREDITS
-###############################################################################
-def load_credits():
-    if os.path.exists(CREDITS_FILE):
-        with open(CREDITS_FILE, "r") as f:
-            credits = json.load(f)
-    else:
-        # Initialiser les crédits si le fichier n'existe pas
-        credits = {}
-    return credits
+    ###############################################################################
+    # FUNCTIONS FOR CREDITS
+    ###############################################################################
+    def load_credits():
+        if os.path.exists(CREDITS_FILE):
+            with open(CREDITS_FILE, "r") as f:
+                credits = json.load(f)
+        else:
+            # Initialiser les crédits si le fichier n'existe pas
+            credits = {}
+        return credits
 
-def save_credits(credits):
-    with open(CREDITS_FILE, "w") as f:
-        json.dump(credits, f, indent=4)
+    def save_credits(credits):
+        with open(CREDITS_FILE, "w") as f:
+            json.dump(credits, f, indent=4)
 
-###############################################################################
-# FUNCTIONS FOR HISTORY
-###############################################################################
-def load_history():
-    if not os.path.exists(HISTORY_FILE):
-        init_history()
-    with open(HISTORY_FILE, 'r') as f:
-        return json.load(f)
+    ###############################################################################
+    # FUNCTIONS FOR HISTORY
+    ###############################################################################
+    def load_history():
+        if not os.path.exists(HISTORY_FILE):
+            init_history()
+        with open(HISTORY_FILE, 'r') as f:
+            return json.load(f)
 
-def save_history(history):
-    with open(HISTORY_FILE, 'w') as f:
-        json.dump(history, f, indent=4)
+    def save_history(history):
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(history, f, indent=4)
 
-###############################################################################
-# MAIN WRAPPER
-###############################################################################
-def main_wrapper():
-    main()
+    ###############################################################################
+    # MAIN WRAPPER
+    ###############################################################################
+    def main_wrapper():
+        main()
+        display_history()
 
-if __name__ == "__main__":
-    main_wrapper()
+    if __name__ == "__main__":
+        main_wrapper()
