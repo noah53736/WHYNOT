@@ -16,11 +16,6 @@ ffmpeg-python
 torch
 torchaudio
 
-# === Transcription ===
-openai-whisper
-# Option GitHub pour openai-whisper, si besoin :
-# git+https://github.com/openai/whisper.git
-
 # === Web Requests ===
 requests
 
