@@ -12,6 +12,10 @@ def transcribe_audio(
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
+    """
+    Envoie le fichier audio à DeepGram pour transcription, 
+    retourne la chaîne de texte.
+    """
     temp_in = "temp_audio.wav"
     try:
         audio = AudioSegment.from_file(file_path)
