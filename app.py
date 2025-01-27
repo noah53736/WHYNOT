@@ -1,7 +1,6 @@
 # app.py
 
 import streamlit as st
-import pandas as pd
 import os
 import io
 import time
@@ -19,7 +18,7 @@ import nova_api  # Assure-toi que `nova_api.py` est dans le même répertoire
 ###############################################################################
 # CONSTANTES
 ###############################################################################
-HISTORY_FILE = "historique.csv"
+HISTORY_FILE = "historique.json"
 CREDITS_FILE = "credits.json"
 
 # Paramètres "silence"
@@ -33,19 +32,19 @@ CROSSFADE_MS = 50
 ###############################################################################
 def init_history():
     if not os.path.exists(HISTORY_FILE):
-        df_init = pd.DataFrame(columns=[
-            "Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût",
-            "Transcription", "Date", "Audio Binaire"
-        ])
-        df_init.to_csv(HISTORY_FILE, index=False)
+        history = []
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(history, f, indent=4)
 
 def load_history():
     if not os.path.exists(HISTORY_FILE):
         init_history()
-    return pd.read_csv(HISTORY_FILE)
+    with open(HISTORY_FILE, 'r') as f:
+        return json.load(f)
 
-def save_history(df: pd.DataFrame):
-    df.to_csv(HISTORY_FILE, index=False)
+def save_history(history):
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(history, f, indent=4)
 
 def generate_alias(length=5):
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -154,10 +153,11 @@ def main():
     st.title("NBL Audio – DeepGram")
 
     # Initialiser / Charger l'historique
-    if "hist_df" not in st.session_state:
-        df = load_history()
-        st.session_state["hist_df"] = df
-    hist_df = st.session_state["hist_df"]
+    if "history" not in st.session_state:
+        history = load_history()
+        st.session_state["history"] = history
+    else:
+        history = st.session_state["history"]
 
     # Charger les crédits
     credits = load_credits()
@@ -306,25 +306,20 @@ def main():
 
                 # Enregistrer dans l'historique
                 alias = generate_alias(6)
-                audio_buf = audio_data  # Directement utiliser les bytes
-
-                new_row = {
+                entry = {
                     "Alias": alias,
                     "Méthode": "Nova (Deepgram)",
                     "Modèle": "nova-2",
-                    "Durée": f"{human_time(original_sec)}",
+                    "Durée": human_time(original_sec),
                     "Temps": human_time(elapsed_time),
                     "Coût": f"${cost:.2f}",
                     "Transcription": transcription,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": audio_buf
+                    "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
                 }
-
-                # Utiliser pd.concat au lieu de append
-                new_df = pd.DataFrame([new_row])
-                hist_df = pd.concat([hist_df, new_df], ignore_index=True)
-                st.session_state["hist_df"] = hist_df
-                save_history(hist_df)
+                history.append(entry)
+                st.session_state["history"] = history
+                save_history(history)
 
                 st.info(f"Historique mis à jour. Alias={alias}")
 
@@ -354,21 +349,12 @@ def main():
     st.sidebar.write("---")
     st.sidebar.header("Historique")
 
-    disp_cols = ["Alias", "Méthode", "Modèle", "Durée", "Temps", "Coût", "Transcription", "Date"]
-    if not hist_df.empty:
-        show_cols = [c for c in disp_cols if c in hist_df.columns]
-        st.sidebar.dataframe(hist_df[show_cols][::-1], use_container_width=True)
+    if history:
+        for entry in reversed(history[-10:]):  # Afficher les 10 dernières transcriptions
+            st.sidebar.markdown(f"**{entry['Alias']}** – {entry['Date']}")
+            st.sidebar.text(entry['Transcription'][:100] + '...')  # Afficher un aperçu
     else:
         st.sidebar.info("Historique vide.")
-
-    st.sidebar.write("### Derniers Audios (3)")
-    if not hist_df.empty:
-        last_auds = hist_df[::-1].head(3)
-        for idx, row in last_auds.iterrows():
-            ab = row.get("Audio Binaire", None)
-            if isinstance(ab, bytes):
-                st.sidebar.write(f"**{row.get('Alias','?')}** – {row.get('Date','?')}")
-                st.sidebar.audio(ab, format="audio/wav")
 
 def load_credits():
     if os.path.exists(CREDITS_FILE):
