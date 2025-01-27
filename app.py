@@ -132,6 +132,21 @@ def remove_silences_smooth(audio_seg: AudioSegment,
     return combined
 
 ###############################################################################
+# GRAPH CRÉDITS
+###############################################################################
+def plot_credits(credits):
+    total_credit = sum(credits.values())
+    remaining_credit = sum([credit for credit in credits.values()])
+
+    labels = ['Crédit Total', 'Crédit Restant']
+    sizes = [total_credit, remaining_credit]
+    colors = ['#ff9999','#66b3ff']
+    fig, ax = plt.subplots()
+    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+    ax.axis('equal')  # Assure que le graphique est un cercle.
+    st.sidebar.pyplot(fig)
+
+###############################################################################
 # MAIN STREAMLIT APP
 ###############################################################################
 def main():
