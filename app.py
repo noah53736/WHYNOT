@@ -28,10 +28,6 @@ SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
 CROSSFADE_MS = 50
 
-WHISPER_API_COST_PER_MINUTE = 0.006
-LOCAL_COST_EUR_PER_HOUR = 4.0
-NOVA_COST_PER_MINUTE = 0.007
-
 ###############################################################################
 # UTILITAIRES
 ###############################################################################
@@ -136,57 +132,11 @@ def remove_silences_smooth(audio_seg: AudioSegment,
     return combined
 
 ###############################################################################
-# LOCAL WHISPER
-###############################################################################
-@st.cache_resource
-def load_local_model(model_name: str):
-    import whisper
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
-    st.info(f"[Local Whisper] Chargement du modèle {model_name} sur {dev}...")
-    return whisper.load_model(model_name, device=dev)
-
-def transcribe_local(file_path: str, model_name: str) -> str:
-    model = load_local_model(model_name)
-    result = model.transcribe(file_path)
-    return result["text"]
-
-###############################################################################
-# OPENAI
-###############################################################################
-def transcribe_openai(file_path: str, openai_key: str) -> str:
-    url = "https://api.openai.com/v1/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {openai_key}"}
-    with open(file_path, "rb") as f:
-        files = {"file": f}
-        data = {"model": "whisper-1", "response_format": "text"}
-        r = requests.post(url, headers=headers, files=files, data=data)
-    if r.status_code == 200:
-        return r.text
-    else:
-        st.error(f"[OpenAI] Erreur {r.status_code} : {r.text}")
-        return ""
-
-###############################################################################
-# GRAPH CRÉDITS
-###############################################################################
-def plot_credits(credits):
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
-
-    labels = ['Crédit Total', 'Crédit Restant']
-    sizes = [total_credit, remaining_credit]
-    colors = ['#ff9999','#66b3ff']
-    fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-    ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
-    st.pyplot(fig)
-
-###############################################################################
 # MAIN STREAMLIT APP
 ###############################################################################
 def main():
-    st.set_page_config(page_title="NBL Audio – 3 modes", layout="wide")
-    st.title("NBL Audio – Local / OpenAI / Nova")
+    st.set_page_config(page_title="NBL Audio – DeepGram", layout="wide")
+    st.title("NBL Audio – DeepGram")
 
     # Initialiser / Charger l'historique
     if "hist_df" not in st.session_state:
@@ -226,6 +176,14 @@ def main():
         st.sidebar.error("Toutes les clés API sont épuisées.")
         st.stop()
 
+    # Sélectionner la clé API à utiliser
+    selected_key_label = st.sidebar.selectbox(
+        "Sélectionner la Clé DeepGram",
+        selectable_keys
+    )
+    selected_key_id = key_number_mapping[selected_key_label]
+    selected_api_key = st.secrets[selected_key_id]
+
     # Afficher le crédit total et restant
     total_credit = sum(credits.values())
     remaining_credit = sum([credit for credit in credits.values()])
@@ -241,6 +199,7 @@ def main():
     st.sidebar.header("Transformations")
     remove_sil = st.sidebar.checkbox("Supprimer silences (douce)", False)
     speed_factor = st.sidebar.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
+    remove_euh = st.sidebar.checkbox("Retirer 'euh' ?", False)
 
     # === Téléchargement ou Enregistrement Audio ===
     st.write("## Source Audio")
@@ -291,17 +250,14 @@ def main():
             # Charger les crédits
             credits = load_credits()
 
-            # Liste des clés API ordonnées
-            ordered_keys = sorted(key_ids, key=lambda x: int(''.join(filter(str.isdigit, x)) or 0))
+            # Transcription via DeepGram Nova
+            with open("temp_input.wav", "wb") as f:
+                final_aud.export(f, format="wav")
 
-            # Extraire les clés API dans l'ordre
-            ordered_api_keys = [st.secrets[key] for key in ordered_keys]
-
-            # Transcription avec Failover et segmentation
-            transcription, used_key, cost = nova_api.transcribe_nova_one_shot(
+            transcription = nova_api.transcribe_nova_one_shot(
                 file_path="temp_input.wav",
-                dg_api_key=ordered_api_keys,
-                language="fr",  # Modifier selon tes besoins
+                dg_api_key=selected_api_key,
+                language="fr",        # Modifier selon tes besoins
                 model_name="nova-2",  # Modifier selon tes besoins
                 punctuate=True,
                 numerals=True
@@ -328,16 +284,10 @@ def main():
                     gain_sec = original_sec - final_sec
                 gain_str = human_time(gain_sec)
 
-                # Affichage des Informations
+                # Calcul du coût (à ajuster selon ton modèle de tarification DeepGram)
+                cost = final_sec * 0.007  # Exemple: 0.007 $ par minute
                 st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
                          f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost:.2f}")
-
-                # Identifier quelle API Key a été utilisée
-                if used_key in key_ids:
-                    api_key_number = key_ids.index(used_key) + 1
-                    st.write(f"**Clé API utilisée** : API Key {api_key_number}")
-                else:
-                    st.write(f"**Clé API utilisée** : {used_key}")
 
                 # Enregistrer dans l'historique
                 alias = generate_alias(6)
@@ -363,8 +313,22 @@ def main():
 
                 st.info(f"Historique mis à jour. Alias={alias}")
 
+                # Mettre à jour les crédits
+                credits[selected_key_id] -= cost
+                save_credits(credits)
+
                 # Rafraîchir les crédits affichés
                 plot_credits(credits)
+
+                # Nettoyer le fichier temporaire
+                if os.path.exists("temp_input.wav"):
+                    os.remove("temp_input.wav")
+
+                # Optionnel: Retirer 'euh' si sélectionné
+                if remove_euh:
+                    new_txt, ccc = remove_euh_in_text(transcription)
+                    transcription = new_txt
+                    st.write(f"({ccc} 'euh' supprimés)")
 
             else:
                 st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
@@ -403,6 +367,17 @@ def load_credits():
 def save_credits(credits):
     with open(CREDITS_FILE, "w") as f:
         json.dump(credits, f, indent=4)
+
+def plot_credits(credits):
+    total_credit = sum(credits.values())
+    remaining_credit = sum([credit for credit in credits.values()])
+    labels = ['Crédit Total', 'Crédit Restant']
+    sizes = [total_credit, remaining_credit]
+    colors = ['#ff9999','#66b3ff']
+    fig, ax = plt.subplots()
+    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+    ax.axis('equal')  # Assure que le graphique est un cercle.
+    st.sidebar.pyplot(fig)
 
 def main_wrapper():
     main()
