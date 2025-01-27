@@ -1,3 +1,7 @@
+# === Build Tools ===
+setuptools>=65.0.0
+wheel>=0.40.0
+
 # === Streamlit ===
 streamlit>=1.25.0
 
