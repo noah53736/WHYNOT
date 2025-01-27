@@ -25,7 +25,6 @@ CREDITS_FILE = "credits.json"
 MIN_SILENCE_LEN = 700  # Correction de l'argument
 SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
-CROSSFADE_MS = 50
 
 # Coût par seconde (à ajuster selon ton modèle de tarification DeepGram)
 COST_PER_SEC = 0.007
@@ -101,13 +100,12 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
     return new_seg
 
 ###############################################################################
-# SUPPRESSION SILENCES "douce"
+# SUPPRESSION SILENCES "CLASSIQUE"
 ###############################################################################
-def remove_silences_smooth(audio_seg: AudioSegment,
+def remove_silences_classic(audio_seg: AudioSegment,
                            min_silence_len=MIN_SILENCE_LEN,
                            silence_thresh=SIL_THRESH_DB,
-                           keep_silence=KEEP_SIL_MS,
-                           crossfade_ms=CROSSFADE_MS):
+                           keep_silence=KEEP_SIL_MS):
     segs = silence.split_on_silence(
         audio_seg,
         min_silence_len=min_silence_len,  # Correction de l'argument
@@ -118,7 +116,7 @@ def remove_silences_smooth(audio_seg: AudioSegment,
         return audio_seg
     combined = segs[0]
     for s in segs[1:]:
-        combined = combined.append(s, crossfade=crossfade_ms)
+        combined = combined.append(s, crossfade=0)  # Pas de crossfade
     return combined
 
 ###############################################################################
@@ -149,20 +147,28 @@ def main():
     credits = load_credits()
 
     # === Options de Transcription ===
-    st.sidebar.header("Options Transcription")
+    # Utiliser un conteneur unique pour mobile
+    with st.sidebar:
+        st.header("Options Transcription")
 
-    # Sélection du modèle de transcription
-    model_selection = st.sidebar.selectbox(
-        "Sélectionner le Modèle de Transcription",
-        ["Nova 2", "Whisper Large"]
-    )
+        # Sélection du modèle de transcription
+        model_selection = st.selectbox(
+            "Sélectionner le Modèle de Transcription",
+            ["Nova 2", "Whisper Large"]
+        )
 
-    # Définir le nom du modèle basé sur la sélection
-    model_mapping = {
-        "Nova 2": "nova-2",
-        "Whisper Large": "whisper-large"  # Assure-toi que ce modèle est disponible dans DeepGram
-    }
-    selected_model = model_mapping.get(model_selection, "nova-2")
+        # Définir le nom du modèle basé sur la sélection
+        model_mapping = {
+            "Nova 2": "nova-2",
+            "Whisper Large": "whisper-large"  # Assure-toi que ce modèle est disponible dans DeepGram
+        }
+        selected_model = model_mapping.get(model_selection, "nova-2")
+
+        # Sélection de la langue
+        language_selection = st.selectbox(
+            "Sélectionner la Langue",
+            ["fr", "en"]
+        )
 
     # Charger les clés API depuis les secrets
     api_keys = []
@@ -177,33 +183,52 @@ def main():
         st.stop()
 
     # === Transformations ===
-    st.sidebar.write("---")
-    st.sidebar.header("Transformations")
-    remove_sil = st.sidebar.checkbox("Supprimer silences (douce)", False)
-    speed_factor = st.sidebar.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
-    language_selection = st.sidebar.selectbox(
-        "Sélectionner la Langue",
-        ["fr", "en"]
-    )
+    with st.sidebar:
+        st.write("---")
+        st.header("Transformations")
+        remove_sil = st.checkbox("Supprimer silences", False)
+        speed_factor = st.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
 
     # === Téléchargement ou Enregistrement Audio ===
     st.write("## Source Audio")
     audio_data = None
-    input_choice = st.radio("Fichier ou Micro ?", ["Fichier", "Micro"])
-    if input_choice == "Fichier":
-        uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
-                                        type=["mp3", "wav", "m4a", "ogg", "webm"])
-        if uploaded_file:
-            if uploaded_file.size > 100 * 1024 * 1024:  # 100 MB
-                st.error("Le fichier est trop volumineux. La taille maximale autorisée est de 100MB.")
-            else:
-                audio_data = uploaded_file.read()
-                st.audio(uploaded_file)
-    else:
-        mic_input = st.audio_input("Enregistrement micro")
-        if mic_input:
-            audio_data = mic_input.read()
-            st.audio(mic_input)
+    file_name = None  # Pour stocker le nom du fichier si renommé
+
+    input_container = st.container()
+    with input_container:
+        input_choice = st.radio("Fichier ou Micro ?", ["Fichier", "Micro"], key="input_choice")
+    
+        if input_choice == "Fichier":
+            uploaded_file = st.file_uploader("Fichier audio (mp3, wav, m4a, ogg, webm)", 
+                                            type=["mp3", "wav", "m4a", "ogg", "webm"], key="uploaded_file")
+            if uploaded_file:
+                if uploaded_file.size > 100 * 1024 * 1024:  # 100 MB
+                    st.error("Le fichier est trop volumineux. La taille maximale autorisée est de 100MB.")
+                else:
+                    audio_data = uploaded_file.read()
+                    st.audio(uploaded_file, format=uploaded_file.type)
+                    # Renommer le fichier
+                    file_name = st.text_input("Renommer le fichier (optionnel)", key="rename_input")
+        else:
+            mic_input = st.audio_input("Enregistrement micro", key="mic_input")
+            if mic_input:
+                audio_data = mic_input.read()
+                st.audio(mic_input, format=mic_input.type)
+
+    # Boutons pour nettoyer les fichiers chargés et l'historique
+    clean_container = st.container()
+    with clean_container:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("Clear Uploaded File"):
+                audio_data = None
+                st.experimental_rerun()
+        with col2:
+            if st.button("Clear History"):
+                history = []
+                st.session_state["history"] = history
+                save_history(history)
+                st.sidebar.success("Historique vidé.")
 
     # === Prétraitement Audio ===
     if audio_data:
@@ -214,7 +239,7 @@ def main():
 
             final_aud = aud
             if remove_sil:
-                final_aud = remove_silences_smooth(final_aud)
+                final_aud = remove_silences_classic(final_aud)
             if abs(speed_factor - 1.0) > 1e-2:
                 final_aud = accelerate_ffmpeg(final_aud, speed_factor)
 
@@ -225,6 +250,12 @@ def main():
             final_aud.export(bufp, format="wav")
             st.write("### Aperçu Audio transformé")
             st.audio(bufp.getvalue(), format="audio/wav")
+
+            # Notification après gains de temps
+            if final_sec < original_sec:
+                gain_sec = original_sec - final_sec
+                gain_str = human_time(gain_sec)
+                st.success(f"Gagné {gain_str} grâce aux transformations audio.")
 
         except Exception as e:
             st.error(f"Erreur chargement/preproc : {e}")
@@ -264,7 +295,9 @@ def main():
             if transcription:
                 st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
                 st.subheader("Résultat de la transcription")
-                st.write(transcription)
+                
+                # Afficher la transcription dans un champ de texte pour faciliter la copie
+                st.text_area("Transcription", transcription, height=200)
 
                 # Bouton pour télécharger la transcription
                 st.download_button(
@@ -273,6 +306,9 @@ def main():
                     file_name="transcription.txt",
                     mime="text/plain"
                 )
+
+                # Notification pour copier la transcription
+                st.info("Pour copier la transcription, sélectionnez le texte ci-dessus et utilisez CTRL+C.")
 
                 # Calcul des gains en temps
                 gain_sec = 0
@@ -284,9 +320,9 @@ def main():
                          f"Temps effectif: {human_time(elapsed_time)} | Coût=${actual_cost:.2f}")
 
                 # Enregistrer dans l'historique
-                alias = generate_alias(6)
+                alias = generate_alias(6) if not file_name else file_name
                 entry = {
-                    "Alias": alias,
+                    "Alias/Nom": alias,
                     "Méthode": f"{model_selection} (DeepGram)",
                     "Modèle": selected_model,
                     "Durée": human_time(original_sec),
@@ -300,7 +336,7 @@ def main():
                 st.session_state["history"] = history
                 save_history(history)
 
-                st.info(f"Historique mis à jour. Alias={alias}")
+                st.info(f"Historique mis à jour. Alias/Nom={alias}")
 
                 # Mettre à jour les crédits
                 credits[selected_key_id] -= actual_cost
@@ -318,18 +354,16 @@ def main():
     st.sidebar.header("Historique")
 
     if history:
-        # Convertir l'historique en tableau
+        # Afficher l'historique sous forme de tableau compact
         history_table = [
             {
-                "Alias": entry["Alias"],
+                "Alias/Nom": entry["Alias/Nom"],
                 "Méthode": entry["Méthode"],
                 "Modèle": entry["Modèle"],
                 "Durée": entry["Durée"],
                 "Temps": entry["Temps"],
                 "Coût": entry["Coût"],
-                "Transcription": entry["Transcription"],
-                "Date": entry["Date"],
-                "Audio": entry["Audio Binaire"]
+                "Date": entry["Date"]
             }
             for entry in history
         ]
@@ -338,12 +372,15 @@ def main():
         # Afficher les aperçus audio
         st.sidebar.write("### Aperçus Audio")
         for entry in reversed(history[-3:]):  # Afficher les 3 dernières transcriptions
-            st.sidebar.markdown(f"**{entry['Alias']}** – {entry['Date']}")
+            st.sidebar.markdown(f"**{entry['Alias/Nom']}** – {entry['Date']}")
             audio_bytes = bytes.fromhex(entry["Audio Binaire"])
             st.sidebar.audio(audio_bytes, format="audio/wav")
     else:
         st.sidebar.info("Historique vide.")
 
+###############################################################################
+# FUNCTIONS FOR CREDITS
+###############################################################################
 def load_credits():
     if os.path.exists(CREDITS_FILE):
         with open(CREDITS_FILE, "r") as f:
@@ -357,6 +394,9 @@ def save_credits(credits):
     with open(CREDITS_FILE, "w") as f:
         json.dump(credits, f, indent=4)
 
+###############################################################################
+# FUNCTIONS FOR HISTORY
+###############################################################################
 def load_history():
     if not os.path.exists(HISTORY_FILE):
         init_history()
@@ -367,6 +407,9 @@ def save_history(history):
     with open(HISTORY_FILE, 'w') as f:
         json.dump(history, f, indent=4)
 
+###############################################################################
+# MAIN WRAPPER
+###############################################################################
 def main_wrapper():
     main()
 
