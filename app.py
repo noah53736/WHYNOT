@@ -108,7 +108,7 @@ def remove_silences_classic(audio_seg: AudioSegment,
                            keep_silence=KEEP_SIL_MS):
     segs = silence.split_on_silence(
         audio_seg,
-        min_silence_len=min_silence_len,  # Correction de l'argument
+        min_silence_len=min_silence_len,
         silence_thresh=silence_thresh,
         keep_silence=keep_silence
     )
@@ -122,12 +122,17 @@ def remove_silences_classic(audio_seg: AudioSegment,
 ###############################################################################
 # SELECTION AUTOMATIQUE DE LA CLÉ API
 ###############################################################################
-def select_api_key(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC):
+def select_api_keys(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC, used_keys=[]):
     cost = duration_sec * cost_per_sec
+    selected_keys = []
     for key_id in key_ids:
+        if key_id in used_keys:
+            continue
         if credits.get(key_id, 0) >= cost:
-            return key_id, cost
-    return None, 0
+            selected_keys.append((key_id, cost))
+            if len(selected_keys) == 2:
+                break
+    return selected_keys  # List of tuples (key_id, cost)
 
 ###############################################################################
 # MAIN STREAMLIT APP
@@ -169,6 +174,9 @@ def main():
             "Sélectionner la Langue",
             ["fr", "en"]
         )
+
+        # Option d'accessibilité pour lancer dual transcription
+        accessibility = st.checkbox("Activer l'accessibilité (Double Transcription)", False)
 
     # Charger les clés API depuis les secrets
     api_keys = []
@@ -221,6 +229,13 @@ def main():
         col1, col2 = st.columns([1, 1])
         with col1:
             if st.button("Clear Uploaded File"):
+                # Reset the session state for uploaded_file
+                if "uploaded_file" in st.session_state:
+                    del st.session_state["uploaded_file"]
+                if "mic_input" in st.session_state:
+                    del st.session_state["mic_input"]
+                if "rename_input" in st.session_state:
+                    del st.session_state["rename_input"]
                 audio_data = None
                 st.experimental_rerun()
         with col2:
@@ -270,84 +285,218 @@ def main():
             duration_sec = final_sec
             cost = duration_sec * COST_PER_SEC
 
-            # Sélectionner une clé API disponible
-            selected_key_id, actual_cost = select_api_key(credits, key_ids, duration_sec, COST_PER_SEC)
-            if not selected_key_id:
-                st.error("Toutes les clés API sont épuisées ou insuffisantes pour cette transcription.")
-                st.stop()
-
-            selected_api_key = st.secrets[selected_key_id]
+            # Sélectionner les clés API disponibles
+            if accessibility:
+                selected_keys = select_api_keys(credits, key_ids, duration_sec, COST_PER_SEC)
+                if len(selected_keys) < 2:
+                    st.error("Pas assez de clés API disponibles pour l'accessibilité.")
+                    st.stop()
+                # Assume the first key for Nova 2 and second for Whisper Large
+                key1_id, cost1 = selected_keys[0]
+                key2_id, cost2 = selected_keys[1]
+                selected_api_keys = [st.secrets[key1_id], st.secrets[key2_id]]
+                selected_key_ids = [key1_id, key2_id]
+            else:
+                selected_keys = select_api_keys(credits, key_ids, duration_sec, COST_PER_SEC)
+                if len(selected_keys) < 1:
+                    st.error("Toutes les clés API sont épuisées ou insuffisantes pour cette transcription.")
+                    st.stop()
+                key_id, actual_cost = selected_keys[0]
+                selected_api_keys = [st.secrets[key_id]]
+                selected_key_ids = [key_id]
 
             # Transcription via DeepGram Nova ou Whisper
             with open("temp_input.wav", "wb") as f:
                 final_aud.export(f, format="wav")
 
-            transcription = nova_api.transcribe_audio(
-                file_path="temp_input.wav",
-                dg_api_key=selected_api_key,
-                language=language_selection,        # Langue sélectionnée
-                model_name=selected_model,          # Basé sur la sélection utilisateur
-                punctuate=True,
-                numerals=True
-            )
-
-            elapsed_time = time.time() - start_t
-            if transcription:
-                st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
-                st.subheader("Résultat de la transcription")
-                
-                # Afficher la transcription dans un champ de texte pour faciliter la copie
-                st.text_area("Transcription", transcription, height=200)
-
-                # Bouton pour télécharger la transcription
-                st.download_button(
-                    "Télécharger la transcription",
-                    data=transcription,
-                    file_name="transcription.txt",
-                    mime="text/plain"
+            if accessibility:
+                # Dual transcription
+                transcription1 = nova_api.transcribe_audio(
+                    file_path="temp_input.wav",
+                    dg_api_key=selected_api_keys[0],
+                    language=language_selection,        # Langue sélectionnée
+                    model_name=model_mapping["Nova 2"],          # Nova 2
+                    punctuate=True,
+                    numerals=True
                 )
+                transcription2 = nova_api.transcribe_audio(
+                    file_path="temp_input.wav",
+                    dg_api_key=selected_api_keys[1],
+                    language=language_selection,        # Langue sélectionnée
+                    model_name=model_mapping["Whisper Large"],  # Whisper Large
+                    punctuate=True,
+                    numerals=True
+                )
+                elapsed_time = time.time() - start_t
 
-                # Notification pour copier la transcription
-                st.info("Pour copier la transcription, sélectionnez le texte ci-dessus et utilisez CTRL+C.")
+                if transcription1 and transcription2:
+                    st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
 
-                # Calcul des gains en temps
-                gain_sec = 0
-                if final_sec < original_sec:
-                    gain_sec = original_sec - final_sec
-                gain_str = human_time(gain_sec)
+                    # Afficher les transcriptions dans des champs de texte pour faciliter la copie
+                    st.subheader("Résultat de la transcription Nova 2")
+                    st.text_area("Transcription Nova 2", transcription1, height=200)
 
-                st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
-                         f"Temps effectif: {human_time(elapsed_time)} | Coût=${actual_cost:.2f}")
+                    st.subheader("Résultat de la transcription Whisper Large")
+                    st.text_area("Transcription Whisper Large", transcription2, height=200)
 
-                # Enregistrer dans l'historique
-                alias = generate_alias(6) if not file_name else file_name
-                entry = {
-                    "Alias/Nom": alias,
-                    "Méthode": f"{model_selection} (DeepGram)",
-                    "Modèle": selected_model,
-                    "Durée": human_time(original_sec),
-                    "Temps": human_time(elapsed_time),
-                    "Coût": f"${actual_cost:.2f}",
-                    "Transcription": transcription,
-                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
-                }
-                history.append(entry)
-                st.session_state["history"] = history
-                save_history(history)
+                    # Boutons pour télécharger et copier les transcriptions
+                    col_download1, col_copy1 = st.columns(2)
+                    with col_download1:
+                        st.download_button(
+                            "Télécharger Nova 2",
+                            data=transcription1,
+                            file_name="transcription_nova2.txt",
+                            mime="text/plain"
+                        )
+                    with col_copy1:
+                        copy_button_html = f"""
+                            <button onclick="navigator.clipboard.writeText(`{transcription1}`).then(function() {{
+                                alert('Transcription Nova 2 copiée dans le presse-papiers!');
+                            }}, function(err) {{
+                                alert('Échec de la copie : ', err);
+                            }});">Copier Nova 2</button>
+                        """
+                        st.components.v1.html(copy_button_html)
 
-                st.info(f"Historique mis à jour. Alias/Nom={alias}")
+                    col_download2, col_copy2 = st.columns(2)
+                    with col_download2:
+                        st.download_button(
+                            "Télécharger Whisper Large",
+                            data=transcription2,
+                            file_name="transcription_whisper_large.txt",
+                            mime="text/plain"
+                        )
+                    with col_copy2:
+                        copy_button_html = f"""
+                            <button onclick="navigator.clipboard.writeText(`{transcription2}`).then(function() {{
+                                alert('Transcription Whisper Large copiée dans le presse-papiers!');
+                            }}, function(err) {{
+                                alert('Échec de la copie : ', err);
+                            }});">Copier Whisper Large</button>
+                        """
+                        st.components.v1.html(copy_button_html)
 
-                # Mettre à jour les crédits
-                credits[selected_key_id] -= actual_cost
-                save_credits(credits)
+                    # Calcul des gains en temps
+                    gain_sec = 0
+                    if final_sec < original_sec:
+                        gain_sec = original_sec - final_sec
+                    gain_str = human_time(gain_sec)
 
-                # Nettoyer le fichier temporaire
-                if os.path.exists("temp_input.wav"):
-                    os.remove("temp_input.wav")
+                    st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
+                             f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost1 + cost2:.2f}")
 
-        except Exception as e:
-            st.error(f"Erreur lors du traitement : {e}")
+                    # Enregistrer dans l'historique
+                    alias1 = generate_alias(6) if not file_name else file_name + "_Nova2"
+                    alias2 = generate_alias(6) if not file_name else file_name + "_WhisperLarge"
+                    entry1 = {
+                        "Alias/Nom": alias1,
+                        "Méthode": f"{model_selection} (DeepGram Nova 2)",
+                        "Modèle": "nova-2",
+                        "Durée": human_time(original_sec),
+                        "Temps": human_time(elapsed_time),
+                        "Coût": f"${cost1:.2f}",
+                        "Transcription": transcription1,
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
+                    }
+                    entry2 = {
+                        "Alias/Nom": alias2,
+                        "Méthode": f"{model_selection} (DeepGram Whisper Large)",
+                        "Modèle": "whisper-large",
+                        "Durée": human_time(original_sec),
+                        "Temps": human_time(elapsed_time),
+                        "Coût": f"${cost2:.2f}",
+                        "Transcription": transcription2,
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
+                    }
+                    history.extend([entry1, entry2])
+                    st.session_state["history"] = history
+                    save_history(history)
+
+                    st.info(f"Historique mis à jour. Alias/Nom={alias1}, {alias2}")
+
+                    # Mettre à jour les crédits
+                    credits[selected_key_ids[0]] -= cost1
+                    credits[selected_key_ids[1]] -= cost2
+                    save_credits(credits)
+
+                    # Nettoyer le fichier temporaire
+                    if os.path.exists("temp_input.wav"):
+                        os.remove("temp_input.wav")
+            else:
+                # Single transcription
+                transcription = nova_api.transcribe_audio(
+                    file_path="temp_input.wav",
+                    dg_api_key=selected_api_keys[0],
+                    language=language_selection,        # Langue sélectionnée
+                    model_name=selected_model,          # Basé sur la sélection utilisateur
+                    punctuate=True,
+                    numerals=True
+                )
+                elapsed_time = time.time() - start_t
+
+                if transcription:
+                    st.success(f"Transcription terminée en {elapsed_time:.2f} secondes")
+                    st.subheader("Résultat de la transcription")
+                    
+                    # Afficher la transcription dans un champ de texte pour faciliter la copie
+                    st.text_area("Transcription", transcription, height=200)
+
+                    # Boutons pour télécharger et copier la transcription
+                    col_download, col_copy = st.columns(2)
+                    with col_download:
+                        st.download_button(
+                            "Télécharger la transcription",
+                            data=transcription,
+                            file_name="transcription.txt",
+                            mime="text/plain"
+                        )
+                    with col_copy:
+                        copy_button_html = f"""
+                            <button onclick="navigator.clipboard.writeText(`{transcription}`).then(function() {{
+                                alert('Transcription copiée dans le presse-papiers!');
+                            }}, function(err) {{
+                                alert('Échec de la copie : ', err);
+                            }});">Copier la transcription</button>
+                        """
+                        st.components.v1.html(copy_button_html)
+
+                    # Calcul des gains en temps
+                    gain_sec = 0
+                    if final_sec < original_sec:
+                        gain_sec = original_sec - final_sec
+                    gain_str = human_time(gain_sec)
+
+                    st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
+                             f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost:.2f}")
+
+                    # Enregistrer dans l'historique
+                    alias = generate_alias(6) if not file_name else file_name
+                    entry = {
+                        "Alias/Nom": alias,
+                        "Méthode": f"{model_selection} (DeepGram)",
+                        "Modèle": selected_model,
+                        "Durée": human_time(original_sec),
+                        "Temps": human_time(elapsed_time),
+                        "Coût": f"${cost:.2f}",
+                        "Transcription": transcription,
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
+                    }
+                    history.append(entry)
+                    st.session_state["history"] = history
+                    save_history(history)
+
+                    st.info(f"Historique mis à jour. Alias/Nom={alias}")
+
+                    # Mettre à jour les crédits
+                    credits[selected_key_ids[0]] -= cost
+                    save_credits(credits)
+
+                    # Nettoyer le fichier temporaire
+                    if os.path.exists("temp_input.wav"):
+                        os.remove("temp_input.wav")
 
     # === Gestion de l'Historique ===
     st.sidebar.write("---")
@@ -377,6 +526,9 @@ def main():
             st.sidebar.audio(audio_bytes, format="audio/wav")
     else:
         st.sidebar.info("Historique vide.")
+
+    # === Options d'accessibilité additionnelles ===
+    # No additional options as accessibility is handled above
 
 ###############################################################################
 # FUNCTIONS FOR CREDITS
