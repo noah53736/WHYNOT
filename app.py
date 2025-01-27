@@ -22,7 +22,7 @@ HISTORY_FILE = "historique.json"
 CREDITS_FILE = "credits.json"
 
 # Paramètres "silence"
-MIN_SIL_MS = 700
+MIN_SILENCE_LEN = 700  # Correction de l'argument
 SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
 CROSSFADE_MS = 50
@@ -64,18 +64,6 @@ def human_time(sec: float) -> str:
         m, s = divmod(r, 60)
         return f"{h}h{m}m{s}s"
 
-def remove_euh_in_text(text: str):
-    words = text.split()
-    cleaned = []
-    cnt = 0
-    for w in words:
-        wlow = w.lower().strip(".,!?;:")
-        if "euh" in wlow or "heu" in wlow:
-            cnt += 1
-        else:
-            cleaned.append(w)
-    return (" ".join(cleaned), cnt)
-
 ###############################################################################
 # ACCELERATION (TIME-STRETCH)
 ###############################################################################
@@ -116,7 +104,7 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
 # SUPPRESSION SILENCES "douce"
 ###############################################################################
 def remove_silences_smooth(audio_seg: AudioSegment,
-                           min_silence_len=MIN_SIL_MS,
+                           min_silence_len=MIN_SILENCE_LEN,
                            silence_thresh=SIL_THRESH_DB,
                            keep_silence=KEEP_SIL_MS,
                            crossfade_ms=CROSSFADE_MS):
@@ -132,23 +120,6 @@ def remove_silences_smooth(audio_seg: AudioSegment,
     for s in segs[1:]:
         combined = combined.append(s, crossfade=crossfade_ms)
     return combined
-
-###############################################################################
-# GRAPH CRÉDITS
-###############################################################################
-def plot_credits(credits):
-    initial_credit_per_key = 10.0  # Assumes chaque clé commence avec 10.0 crédits
-    total_credit = len(credits) * initial_credit_per_key
-    remaining_credit = sum(credits.values())
-    used_credit = total_credit - remaining_credit
-
-    labels = ['Crédit Utilisé', 'Crédit Restant']
-    sizes = [used_credit, remaining_credit]
-    colors = ['#ff9999','#66b3ff']
-    fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-    ax.axis('equal')  # Assure que le graphique est un cercle.
-    st.sidebar.pyplot(fig)
 
 ###############################################################################
 # SELECTION AUTOMATIQUE DE LA CLÉ API
@@ -183,13 +154,13 @@ def main():
     # Sélection du modèle de transcription
     model_selection = st.sidebar.selectbox(
         "Sélectionner le Modèle de Transcription",
-        ["Whisper Large", "Nova 2"]
+        ["Nova 2", "Whisper Large"]
     )
 
     # Définir le nom du modèle basé sur la sélection
     model_mapping = {
-        "Whisper Large": "whisper-large",  # Assurez-vous que ce modèle est disponible dans DeepGram
-        "Nova 2": "nova-2"
+        "Nova 2": "nova-2",
+        "Whisper Large": "whisper-large"  # Assure-toi que ce modèle est disponible dans DeepGram
     }
     selected_model = model_mapping.get(model_selection, "nova-2")
 
@@ -210,7 +181,10 @@ def main():
     st.sidebar.header("Transformations")
     remove_sil = st.sidebar.checkbox("Supprimer silences (douce)", False)
     speed_factor = st.sidebar.slider("Accélération (time-stretch)", 0.5, 4.0, 1.0, 0.1)
-    remove_euh = st.sidebar.checkbox("Retirer 'euh' ?", False)
+    language_selection = st.sidebar.selectbox(
+        "Sélectionner la Langue",
+        ["fr", "en"]
+    )
 
     # === Téléchargement ou Enregistrement Audio ===
     st.write("## Source Audio")
@@ -277,11 +251,11 @@ def main():
             with open("temp_input.wav", "wb") as f:
                 final_aud.export(f, format="wav")
 
-            transcription = nova_api.transcribe_nova_one_shot(
+            transcription = nova_api.transcribe_audio(
                 file_path="temp_input.wav",
                 dg_api_key=selected_api_key,
-                language="fr",        # Modifier selon tes besoins
-                model_name=selected_model,  # Basé sur la sélection utilisateur
+                language=language_selection,        # Langue sélectionnée
+                model_name=selected_model,          # Basé sur la sélection utilisateur
                 punctuate=True,
                 numerals=True
             )
@@ -332,21 +306,10 @@ def main():
                 credits[selected_key_id] -= actual_cost
                 save_credits(credits)
 
-                # Rafraîchir les crédits affichés
-                plot_credits(credits)
-
                 # Nettoyer le fichier temporaire
                 if os.path.exists("temp_input.wav"):
                     os.remove("temp_input.wav")
 
-                # Optionnel: Retirer 'euh' si sélectionné
-                if remove_euh:
-                    new_txt, ccc = remove_euh_in_text(transcription)
-                    transcription = new_txt
-                    st.write(f"({ccc} 'euh' supprimés)")
-
-            else:
-                st.warning("Aucune transcription retournée. Vérifie les logs ci-dessus.")
         except Exception as e:
             st.error(f"Erreur lors du traitement : {e}")
 
@@ -355,9 +318,29 @@ def main():
     st.sidebar.header("Historique")
 
     if history:
-        for entry in reversed(history[-10:]):  # Afficher les 10 dernières transcriptions
+        # Convertir l'historique en tableau
+        history_table = [
+            {
+                "Alias": entry["Alias"],
+                "Méthode": entry["Méthode"],
+                "Modèle": entry["Modèle"],
+                "Durée": entry["Durée"],
+                "Temps": entry["Temps"],
+                "Coût": entry["Coût"],
+                "Transcription": entry["Transcription"],
+                "Date": entry["Date"],
+                "Audio": entry["Audio Binaire"]
+            }
+            for entry in history
+        ]
+        st.sidebar.table(history_table[::-1])  # Afficher les plus récentes en haut
+
+        # Afficher les aperçus audio
+        st.sidebar.write("### Aperçus Audio")
+        for entry in reversed(history[-3:]):  # Afficher les 3 dernières transcriptions
             st.sidebar.markdown(f"**{entry['Alias']}** – {entry['Date']}")
-            st.sidebar.text(entry['Transcription'][:100] + '...')  # Afficher un aperçu
+            audio_bytes = bytes.fromhex(entry["Audio Binaire"])
+            st.sidebar.audio(audio_bytes, format="audio/wav")
     else:
         st.sidebar.info("Historique vide.")
 
@@ -374,19 +357,15 @@ def save_credits(credits):
     with open(CREDITS_FILE, "w") as f:
         json.dump(credits, f, indent=4)
 
-def plot_credits(credits):
-    initial_credit_per_key = 10.0  # Assumes chaque clé commence avec 10.0 crédits
-    total_credit = len(credits) * initial_credit_per_key
-    remaining_credit = sum(credits.values())
-    used_credit = total_credit - remaining_credit
+def load_history():
+    if not os.path.exists(HISTORY_FILE):
+        init_history()
+    with open(HISTORY_FILE, 'r') as f:
+        return json.load(f)
 
-    labels = ['Crédit Utilisé', 'Crédit Restant']
-    sizes = [used_credit, remaining_credit]
-    colors = ['#ff9999','#66b3ff']
-    fig, ax = plt.subplots()
-    ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
-    ax.axis('equal')  # Assure que le graphique est un cercle.
-    st.sidebar.pyplot(fig)
+def save_history(history):
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(history, f, indent=4)
 
 def main_wrapper():
     main()
