@@ -27,6 +27,9 @@ SIL_THRESH_DB = -35
 KEEP_SIL_MS = 50
 CROSSFADE_MS = 50
 
+# Coût par seconde (à ajuster selon ton modèle de tarification DeepGram)
+COST_PER_SEC = 0.007
+
 ###############################################################################
 # UTILITAIRES
 ###############################################################################
@@ -113,15 +116,15 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
 # SUPPRESSION SILENCES "douce"
 ###############################################################################
 def remove_silences_smooth(audio_seg: AudioSegment,
-                           min_sil_len=MIN_SIL_MS,
+                           min_silence_len=MIN_SIL_MS,
                            silence_thresh=SIL_THRESH_DB,
-                           keep_sil_ms=KEEP_SIL_MS,
+                           keep_silence=KEEP_SIL_MS,
                            crossfade_ms=CROSSFADE_MS):
     segs = silence.split_on_silence(
         audio_seg,
-        min_sil_len=min_sil_len,
+        min_silence_len=min_silence_len,  # Correction de l'argument
         silence_thresh=silence_thresh,
-        keep_silence=keep_sil_ms
+        keep_silence=keep_silence
     )
     if not segs:
         return audio_seg
@@ -134,16 +137,28 @@ def remove_silences_smooth(audio_seg: AudioSegment,
 # GRAPH CRÉDITS
 ###############################################################################
 def plot_credits(credits):
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
+    initial_credit_per_key = 10.0  # Assumes chaque clé commence avec 10.0 crédits
+    total_credit = len(credits) * initial_credit_per_key
+    remaining_credit = sum(credits.values())
+    used_credit = total_credit - remaining_credit
 
-    labels = ['Crédit Total', 'Crédit Restant']
-    sizes = [total_credit, remaining_credit]
+    labels = ['Crédit Utilisé', 'Crédit Restant']
+    sizes = [used_credit, remaining_credit]
     colors = ['#ff9999','#66b3ff']
     fig, ax = plt.subplots()
     ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
     ax.axis('equal')  # Assure que le graphique est un cercle.
     st.sidebar.pyplot(fig)
+
+###############################################################################
+# SELECTION AUTOMATIQUE DE LA CLÉ API
+###############################################################################
+def select_api_key(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC):
+    cost = duration_sec * cost_per_sec
+    for key_id in key_ids:
+        if credits.get(key_id, 0) >= cost:
+            return key_id, cost
+    return None, 0
 
 ###############################################################################
 # MAIN STREAMLIT APP
@@ -165,6 +180,19 @@ def main():
     # === Options de Transcription ===
     st.sidebar.header("Options Transcription")
 
+    # Sélection du modèle de transcription
+    model_selection = st.sidebar.selectbox(
+        "Sélectionner le Modèle de Transcription",
+        ["Whisper Large", "Nova 2"]
+    )
+
+    # Définir le nom du modèle basé sur la sélection
+    model_mapping = {
+        "Whisper Large": "whisper-large",  # Assurez-vous que ce modèle est disponible dans DeepGram
+        "Nova 2": "nova-2"
+    }
+    selected_model = model_mapping.get(model_selection, "nova-2")
+
     # Charger les clés API depuis les secrets
     api_keys = []
     key_ids = []
@@ -176,38 +204,6 @@ def main():
     if not api_keys:
         st.sidebar.error("Aucune clé API DeepGram trouvée dans les secrets.")
         st.stop()
-
-    # Filtrer les clés API avec crédit suffisant
-    selectable_keys = []
-    key_number_mapping = {}  # Mapping de label à clé réelle
-    for i, key_id in enumerate(key_ids):
-        remaining = credits.get(key_id, 0)
-        if remaining > 0:
-            label = f"API Key {i+1}"
-            selectable_keys.append(label)
-            key_number_mapping[label] = key_id
-
-    if not selectable_keys:
-        st.sidebar.error("Toutes les clés API sont épuisées.")
-        st.stop()
-
-    # Sélectionner la clé API à utiliser
-    selected_key_label = st.sidebar.selectbox(
-        "Sélectionner la Clé DeepGram",
-        selectable_keys
-    )
-    selected_key_id = key_number_mapping[selected_key_label]
-    selected_api_key = st.secrets[selected_key_id]
-
-    # Afficher le crédit total et restant
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
-    st.sidebar.subheader("Crédits")
-    progress = remaining_credit / total_credit if total_credit > 0 else 0
-    st.sidebar.progress(progress)
-    st.sidebar.write(f"**Total Crédit**: ${total_credit:.2f}")
-    st.sidebar.write(f"**Crédit Restant**: ${remaining_credit:.2f}")
-    plot_credits(credits)
 
     # === Transformations ===
     st.sidebar.write("---")
@@ -248,6 +244,9 @@ def main():
             if abs(speed_factor - 1.0) > 1e-2:
                 final_aud = accelerate_ffmpeg(final_aud, speed_factor)
 
+            final_sec = len(final_aud) / 1000.0
+            st.write(f"Durée finale après transformations : {human_time(final_sec)}")
+
             bufp = io.BytesIO()
             final_aud.export(bufp, format="wav")
             st.write("### Aperçu Audio transformé")
@@ -262,10 +261,19 @@ def main():
             st.write("Transcription en cours...")
             start_t = time.time()
 
-            # Charger les crédits
-            credits = load_credits()
+            # Calculer la durée et le coût
+            duration_sec = final_sec
+            cost = duration_sec * COST_PER_SEC
 
-            # Transcription via DeepGram Nova
+            # Sélectionner une clé API disponible
+            selected_key_id, actual_cost = select_api_key(credits, key_ids, duration_sec, COST_PER_SEC)
+            if not selected_key_id:
+                st.error("Toutes les clés API sont épuisées ou insuffisantes pour cette transcription.")
+                st.stop()
+
+            selected_api_key = st.secrets[selected_key_id]
+
+            # Transcription via DeepGram Nova ou Whisper
             with open("temp_input.wav", "wb") as f:
                 final_aud.export(f, format="wav")
 
@@ -273,7 +281,7 @@ def main():
                 file_path="temp_input.wav",
                 dg_api_key=selected_api_key,
                 language="fr",        # Modifier selon tes besoins
-                model_name="nova-2",  # Modifier selon tes besoins
+                model_name=selected_model,  # Basé sur la sélection utilisateur
                 punctuate=True,
                 numerals=True
             )
@@ -294,25 +302,22 @@ def main():
 
                 # Calcul des gains en temps
                 gain_sec = 0
-                final_sec = len(final_aud) / 1000.0
                 if final_sec < original_sec:
                     gain_sec = original_sec - final_sec
                 gain_str = human_time(gain_sec)
 
-                # Calcul du coût (à ajuster selon ton modèle de tarification DeepGram)
-                cost = final_sec * 0.007  # Exemple: 0.007 $ par minute
                 st.write(f"Durée finale : {human_time(final_sec)} (gagné {gain_str}) | "
-                         f"Temps effectif: {human_time(elapsed_time)} | Coût=${cost:.2f}")
+                         f"Temps effectif: {human_time(elapsed_time)} | Coût=${actual_cost:.2f}")
 
                 # Enregistrer dans l'historique
                 alias = generate_alias(6)
                 entry = {
                     "Alias": alias,
-                    "Méthode": "Nova (Deepgram)",
-                    "Modèle": "nova-2",
+                    "Méthode": f"{model_selection} (DeepGram)",
+                    "Modèle": selected_model,
                     "Durée": human_time(original_sec),
                     "Temps": human_time(elapsed_time),
-                    "Coût": f"${cost:.2f}",
+                    "Coût": f"${actual_cost:.2f}",
                     "Transcription": transcription,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "Audio Binaire": audio_data.hex()  # Stocker en hexadécimal
@@ -324,7 +329,7 @@ def main():
                 st.info(f"Historique mis à jour. Alias={alias}")
 
                 # Mettre à jour les crédits
-                credits[selected_key_id] -= cost
+                credits[selected_key_id] -= actual_cost
                 save_credits(credits)
 
                 # Rafraîchir les crédits affichés
@@ -370,10 +375,13 @@ def save_credits(credits):
         json.dump(credits, f, indent=4)
 
 def plot_credits(credits):
-    total_credit = sum(credits.values())
-    remaining_credit = sum([credit for credit in credits.values()])
-    labels = ['Crédit Total', 'Crédit Restant']
-    sizes = [total_credit, remaining_credit]
+    initial_credit_per_key = 10.0  # Assumes chaque clé commence avec 10.0 crédits
+    total_credit = len(credits) * initial_credit_per_key
+    remaining_credit = sum(credits.values())
+    used_credit = total_credit - remaining_credit
+
+    labels = ['Crédit Utilisé', 'Crédit Restant']
+    sizes = [used_credit, remaining_credit]
     colors = ['#ff9999','#66b3ff']
     fig, ax = plt.subplots()
     ax.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
