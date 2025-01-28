@@ -13,6 +13,10 @@ def transcribe_audio(
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
+    """
+    Effectue une transcription via l'API DeepGram (dg_api_key).
+    Aucune segmentation, juste un traitement direct.
+    """
     temp_in = "temp_audio_tmp.wav"
     try:
         audio = AudioSegment.from_file(file_path)
