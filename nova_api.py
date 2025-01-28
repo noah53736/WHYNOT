@@ -1,3 +1,5 @@
+# nova_api.py
+
 import os
 import requests
 import streamlit as st
@@ -43,17 +45,17 @@ def transcribe_audio(
         resp = requests.post(url, headers=headers, data=payload)
         if resp.status_code == 200:
             j = resp.json()
-            return (
+            transcript = (
                 j.get("results", {})
                  .get("channels", [{}])[0]
                  .get("alternatives", [{}])[0]
-                 .get("transcript", ""),
-                True
+                 .get("transcript", "")
             )
+            return transcript, True
         else:
             st.error(f"[DeepGram] Erreur {resp.status_code} : {resp.text}")
             if resp.status_code == 401:
-                # Invalid credentials
+                # Credentials invalides
                 return "", False
             return "", False
     except Exception as e:
