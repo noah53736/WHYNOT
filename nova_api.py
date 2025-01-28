@@ -1,4 +1,3 @@
-# nova_api.py
 import os
 import requests
 import streamlit as st
