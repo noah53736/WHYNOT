@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import os
 import json
@@ -118,8 +117,6 @@ def display_history_side():
         st.sidebar.write(f"Total: {len(tlist)} transcriptions.")
         for item in tlist[::-1][:8]:
             st.sidebar.markdown(f"- **{item.get('audio_name','?')}** / {item.get('date','?')}")
-            # Optionnel : Ajouter un aperçu audio
-            # Assure-toi que le fichier audio est accessible ou stocke le binaire si nécessaire
 
 def get_available_api_keys():
     """
@@ -265,7 +262,7 @@ def main():
                     st.info("Transcription Nova2 en cours...")
                     transcript_nova2, success_nova2 = nova_api.transcribe_audio(transformed_path, key1, language=lang_choice, model_name="nova-2")
                     if not success_nova2:
-                        st.warning("Erreur avec Nova2. Passage à la clé suivante.")
+                        st.warning("Erreur avec Nova2. Passage à une autre clé si disponible.")
                         # Relancer avec une autre clé si disponible
                         remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
                         if remaining_keys:
@@ -273,16 +270,16 @@ def main():
                             transcript_nova2, success_nova2 = nova_api.transcribe_audio(transformed_path, key1_new, language=lang_choice, model_name="nova-2")
                             if success_nova2:
                                 used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
-                            else:
-                                st.error("Échec de la transcription Nova2 avec toutes les clés disponibles.")
-                                transcript_nova2 = "Erreur de transcription Nova2."
+                        else:
+                            st.error("Toutes les clés Nova2 sont épuisées.")
+                            transcript_nova2 = "Erreur de transcription Nova2."
 
                     st.success("Transcription Nova2 terminée.")
                     
                     st.info("Transcription WhisperLarge en cours...")
                     transcript_whisper, success_whisper = nova_api.transcribe_audio(transformed_path, key2, language=lang_choice, model_name="whisper-large")
                     if not success_whisper:
-                        st.warning("Erreur avec WhisperLarge. Passage à la clé suivante.")
+                        st.warning("Erreur avec WhisperLarge. Passage à une autre clé si disponible.")
                         # Relancer avec une autre clé si disponible
                         remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
                         if remaining_keys:
@@ -290,9 +287,9 @@ def main():
                             transcript_whisper, success_whisper = nova_api.transcribe_audio(transformed_path, key2_new, language=lang_choice, model_name="whisper-large")
                             if success_whisper:
                                 used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
-                            else:
-                                st.error("Échec de la transcription WhisperLarge avec toutes les clés disponibles.")
-                                transcript_whisper = "Erreur de transcription WhisperLarge."
+                        else:
+                            st.error("Toutes les clés WhisperLarge sont épuisées.")
+                            transcript_whisper = "Erreur de transcription WhisperLarge."
 
                     st.success("Transcription WhisperLarge terminée.")
                     
@@ -320,7 +317,7 @@ def main():
                     st.info(f"Transcription {model_choice} en cours...")
                     transcript, success = nova_api.transcribe_audio(transformed_path, key1, language=lang_choice, model_name=model_map[model_choice])
                     if not success:
-                        st.warning(f"Erreur avec {model_choice}. Passage à la clé suivante.")
+                        st.warning(f"Erreur avec {model_choice}. Passage à une autre clé si disponible.")
                         # Relancer avec une autre clé si disponible
                         remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
                         if remaining_keys:
@@ -328,9 +325,9 @@ def main():
                             transcript, success = nova_api.transcribe_audio(transformed_path, key1_new, language=lang_choice, model_name=model_map[model_choice])
                             if success:
                                 used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
-                            else:
-                                st.error(f"Échec de la transcription {model_choice} avec toutes les clés disponibles.")
-                                transcript = f"Erreur de transcription {model_choice}."
+                        else:
+                            st.error(f"Échec de la transcription {model_choice} avec toutes les clés disponibles.")
+                            transcript = f"Erreur de transcription {model_choice}."
                     
                     if success:
                         st.success("Transcription terminée.")
