@@ -15,8 +15,8 @@ def transcribe_audio(
     numerals: bool = True
 ) -> str:
     """
-    Transcrit le fichier WAV 'file_path' via l'API DeepGram (dg_api_key).
-    Aucune segmentation, on traite en one-shot dans cette fonction.
+    Transcrit un fichier WAV 'file_path' via DeepGram (one-shot).
+    Pas de segmentation ici (géré en amont).
     """
     temp_in = "temp_audio_tmp.wav"
     try:
