@@ -1,26 +1,29 @@
+# app.py
+
 import streamlit as st
 import os
-import io
-import time
+import json
 import random
 import string
-import json
+import time
 import subprocess
 from datetime import datetime
-
 from pydub import AudioSegment, silence
+
 import nova_api
 
+# --- Configuration de la Page ---
+st.set_page_config(page_title="NBL Audio", layout="wide")
+
 HISTORY_FILE = "historique.json"
-CREDITS_FILE = "credits.json"
 
-MIN_SILENCE_LEN = 700
-SIL_THRESH_DB = -35
-KEEP_SIL_MS = 50
-COST_PER_SEC = 0.007
+# Paramètres de transformations par défaut
+DEFAULT_MIN_SILENCE_LEN = 700  # en ms
+DEFAULT_SIL_THRESH_DB = -35     # en dB
+DEFAULT_KEEP_SIL_MS = 50        # en ms
+COST_PER_SEC = 0.007            # Coût par seconde de transcription
 
-# -- Place set_page_config at the very top! --
-st.set_page_config(page_title="N-B-L Audio", layout="wide")
+# --- Fonctions Utilitaires ---
 
 def init_history():
     if not os.path.exists(HISTORY_FILE):
@@ -28,8 +31,6 @@ def init_history():
             json.dump([], f, indent=4)
 
 def load_history():
-    if not os.path.exists(HISTORY_FILE):
-        init_history()
     with open(HISTORY_FILE, "r") as f:
         return json.load(f)
 
@@ -68,20 +69,24 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
         remain /= 0.5
     filters.append(f"atempo={remain}")
     f_str = ",".join(filters)
-    cmd = ["ffmpeg","-y","-i", tmp_in,"-filter:a", f_str, tmp_out]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    new_seg = AudioSegment.from_file(tmp_out, format="wav")
+    cmd = ["ffmpeg", "-y", "-i", tmp_in, "-filter:a", f_str, tmp_out]
     try:
-        os.remove(tmp_in)
-        os.remove(tmp_out)
-    except:
-        pass
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        new_seg = AudioSegment.from_file(tmp_out, format="wav")
+    except Exception as e:
+        st.error(f"Erreur lors de l'accélération audio : {e}")
+        new_seg = audio_seg
+    finally:
+        if os.path.exists(tmp_in):
+            os.remove(tmp_in)
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
     return new_seg
 
 def remove_silences_classic(audio_seg: AudioSegment,
-                            min_silence_len=MIN_SILENCE_LEN,
-                            silence_thresh=SIL_THRESH_DB,
-                            keep_silence=KEEP_SIL_MS):
+                            min_silence_len=DEFAULT_MIN_SILENCE_LEN,
+                            silence_thresh=DEFAULT_SIL_THRESH_DB,
+                            keep_silence=DEFAULT_KEEP_SIL_MS):
     segs = silence.split_on_silence(
         audio_seg,
         min_silence_len=min_silence_len,
@@ -94,18 +99,6 @@ def remove_silences_classic(audio_seg: AudioSegment,
     for s in segs[1:]:
         combined = combined.append(s, crossfade=0)
     return combined
-
-def select_api_keys(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC, used_keys=[]):
-    cost = duration_sec * cost_per_sec
-    selected = []
-    for key_id in key_ids:
-        if key_id in used_keys:
-            continue
-        if credits.get(key_id, 0) >= cost:
-            selected.append((key_id, cost))
-            if len(selected) == 2:
-                break
-    return selected
 
 def copy_to_clipboard(text):
     script_html = f"""
@@ -122,241 +115,258 @@ def copy_to_clipboard(text):
     """
     st.components.v1.html(script_html)
 
-def load_credits():
-    if os.path.exists(CREDITS_FILE):
-        with open(CREDITS_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_credits(c):
-    with open(CREDITS_FILE, "w") as f:
-        json.dump(c, f, indent=4)
-
-def display_history():
+def display_history_side():
     st.sidebar.write("---")
     st.sidebar.header("Historique")
-    h = st.session_state.get("history", [])
-    if h:
-        table = []
-        for en in h:
-            table.append({
-                "Alias/Nom": en["Alias/Nom"],
-                "Méthode": en["Méthode"],
-                "Modèle": en["Modèle"],
-                "Durée": en["Durée"],
-                "Temps": en["Temps"],
-                "Coût": en["Coût"],
-                "Date": en["Date"]
-            })
-        st.sidebar.table(table[::-1])
-        st.sidebar.write("### Aperçus Audio")
-        for en in reversed(h[-3:]):
-            st.sidebar.markdown(f"**{en['Alias/Nom']}** – {en['Date']}")
-            ab = bytes.fromhex(en["Audio Binaire"])
-            st.sidebar.audio(ab, format="audio/wav")
+    history = load_history()
+    if not history:
+        st.sidebar.info("Aucune transcription enregistrée.")
     else:
-        st.sidebar.info("Historique vide.")
+        st.sidebar.write(f"Total: {len(history)} transcriptions.")
+        for item in history[::-1][:8]:
+            st.sidebar.markdown(f"- **{item.get('audio_name','?')}** / {item.get('date','?')}")
+
+def get_available_api_keys():
+    """
+    Récupère toutes les clés API disponibles depuis les secrets.
+    Retourne une liste de tuples (clé, nom).
+    """
+    api_keys = []
+    for i in range(1, 16):
+        key_name = f"NOVA{i}"
+        try:
+            key = st.secrets[key_name]
+            api_keys.append((key, key_name))
+        except KeyError:
+            st.sidebar.error(f"Clé API manquante : {key_name}")
+    return api_keys
+
+def reset_app():
+    if st.button("Recommencer à zéro"):
+        if os.path.exists(HISTORY_FILE):
+            os.remove(HISTORY_FILE)
+        init_history()
+        st.experimental_rerun()
+
+# --- Fonction Principale ---
 
 def main():
-    st.title("N-B-L Audio : Transcription Grand Public")
-    if "history" not in st.session_state:
-        st.session_state["history"] = load_history()
-    history = st.session_state["history"]
-    credits = load_credits()
+    init_history()
+    display_history_side()
 
-    st.write("## Options de Transcription")
-    col1, col2 = st.columns([1,1])
-    with col1:
-        model_selection = st.selectbox("Modèle :", ["Nova 2", "Whisper Large"])
-    with col2:
-        language_selection = st.selectbox("Langue :", ["fr", "en"])
+    st.title("NBL Audio : Transcription")
+    st.markdown("Choisissez votre source audio (fichier, micro, ou multi), configurez les options dans la barre latérale, puis lancez la transcription.")
 
-    model_map = {"Nova 2":"nova-2","Whisper Large":"whisper-large"}
-    chosen_model = model_map.get(model_selection,"nova-2")
+    # Barre latérale : options
+    st.sidebar.header("Options")
+    remove_sil = st.sidebar.checkbox("Supprimer les silences", False)
+    if remove_sil:
+        min_silence_len = st.sidebar.number_input("Longueur minimale du silence (ms)", min_value=100, max_value=5000, value=DEFAULT_MIN_SILENCE_LEN, step=100)
+        silence_thresh = st.sidebar.number_input("Seuil de décibels (dB)", min_value=-100, max_value=0, value=DEFAULT_SIL_THRESH_DB, step=1)
+        keep_silence = st.sidebar.number_input("Durée de silence à conserver (ms)", min_value=0, max_value=1000, value=DEFAULT_KEEP_SIL_MS, step=10)
+    else:
+        min_silence_len = DEFAULT_MIN_SILENCE_LEN
+        silence_thresh = DEFAULT_SIL_THRESH_DB
+        keep_silence = DEFAULT_KEEP_SIL_MS
 
-    accessibility = st.checkbox("Double Transcription (Accessibilité)")
+    speed_factor = st.sidebar.slider("Accélération Audio", 0.5, 4.0, 1.0, 0.1)
+    double_mode = st.sidebar.checkbox("Transcription Double (Nova2 + Whisper)", False)
 
-    st.write("---")
-    st.write("### Transformations Audio")
-    remove_sil = st.checkbox("Supprimer Silences")
-    speed_factor = st.slider("Accélération", 0.5,4.0,1.0,0.1)
+    st.sidebar.write("---")
+    st.sidebar.header("Modèle (si simple)")
+    model_choice = st.sidebar.radio("Modèle IA:", ["Nova 2", "Whisper Large"])
+    model_map = {"Nova 2": "nova-2", "Whisper Large": "whisper-large"}
 
-    st.write("## Entrée Audio")
-    audio_data = None
-    file_name = None
+    st.sidebar.write("---")
+    st.sidebar.header("Langue")
+    lang_choice = st.sidebar.radio("Langue:", ["fr", "en", "es", "de", "it", "pt", "ja", "ko", "zh"])
 
-    input_type = st.radio("Type d'Entrée :", ["Fichier (Upload)", "Micro (Enregistrement)"])
-    if input_type=="Fichier (Upload)":
+    # Récupération des clés API depuis les secrets
+    api_keys = get_available_api_keys()
+    if not api_keys:
+        st.sidebar.error("Aucune clé API disponible. Veuillez ajouter des clés dans les Secrets de l'application.")
+        st.stop()
+
+    # Initialiser le gestionnaire de clés API
+    api_key_manager = nova_api.APIKeyManager(api_keys)
+
+    # Choix du mode d'entrée
+    st.write("## Mode d'Entrée")
+    input_type = st.radio("", ["Fichier (Upload)", "Micro (Enregistrement)", "Multi-Fichiers", "Multi-Micro"])
+    segments = []  # Liste de tuples (fichier, nom)
+
+    if input_type == "Fichier (Upload)":
         upf = st.file_uploader("Importer l'audio", type=["mp3","wav","m4a","ogg","webm"])
         if upf:
-            if upf.size>200*1024*1024:
+            if upf.size > 200 * 1024 * 1024:
                 st.warning("Fichier > 200MB (limite Streamlit).")
             else:
                 audio_data = upf.read()
-                st.audio(upf, format=upf.type)
-                file_name = st.text_input("Nom du Fichier (Optionnel)")
-    else:
+                st.audio(audio_data, format=upf.type)
+                file_name = st.text_input("Nom du Fichier (Optionnel)", upf.name, key="rename_single")
+                segments.append((audio_data, file_name if file_name else upf.name))
+    elif input_type == "Micro (Enregistrement)":
         mic_input = st.audio_input("Micro")
         if mic_input:
             audio_data = mic_input.read()
-            st.audio(mic_input, format=mic_input.type)
+            st.audio(audio_data, format=mic_input.type)
+            file_name = st.text_input("Nom (Optionnel)", "micro.wav", key="rename_micro_single")
+            segments.append((audio_data, file_name if file_name else "micro.wav"))
+    elif input_type == "Multi-Fichiers":
+        st.write("Chargez plusieurs fichiers d'un coup (max 15):")
+        many_files = st.file_uploader("Importer plusieurs fichiers", accept_multiple_files=True, type=["mp3","wav","m4a","ogg","webm"])
+        if many_files:
+            for idx, fobj in enumerate(many_files):
+                if fobj.size > 200 * 1024 * 1024:
+                    st.warning(f"Fichier #{idx+1} > 200MB (limite Streamlit).")
+                    continue
+                audio_data = fobj.read()
+                st.audio(audio_data, format=fobj.type)
+                rename = st.text_input(f"Renommer Fichier #{idx+1} (optionnel)", fobj.name, key=f"rename_f_{idx}")
+                segments.append((audio_data, rename if rename else fobj.name))
+    else:  # Multi-Micro
+        st.write("Enregistrez plusieurs micros (max 15):")
+        for i in range(1, 16):
+            micX = st.audio_input(f"Enregistrement Micro #{i}", key=f"mic_{i}")
+            if micX:
+                audio_data = micX.read()
+                st.audio(audio_data, format=micX.type)
+                rename = st.text_input(f"Nom Micro #{i} (Optionnel)", f"micro_{i}.wav", key=f"rename_m_{i}")
+                segments.append((audio_data, rename if rename else f"micro_{i}.wav"))
 
-    cA,cB = st.columns(2)
-    with cA:
-        if st.button("Effacer l'Entrée"):
-            audio_data = None
-            st.experimental_rerun()
-    with cB:
-        if st.button("Vider l'Historique"):
-            st.session_state["history"]=[]
-            save_history([])
-            st.sidebar.success("Historique vidé.")
+    # Bouton "Transcrire"
+    if len(segments) > 0 and st.button("Transcrire Maintenant"):
+        transcriptions = load_history()
+        start_time = time.time()
+        used_keys = []  # Pour éviter de réutiliser la même clé simultanément
 
-    final_aud = None
-    if audio_data:
-        try:
-            seg = AudioSegment.from_file(io.BytesIO(audio_data))
-            orig_sec = len(seg)/1000.0
-            st.write(f"Durée Originale : {human_time(orig_sec)}")
-            final_aud = seg
-            if remove_sil:
-                final_aud = remove_silences_classic(final_aud)
-            if abs(speed_factor-1.0)>1e-2:
-                final_aud = accelerate_ffmpeg(final_aud, speed_factor)
-            final_sec = len(final_aud)/1000.0
-            st.write(f"Durée Finale : {human_time(final_sec)}")
-            bufIO = io.BytesIO()
-            final_aud.export(bufIO, format="wav")
-            st.write("### Aperçu Audio Transformé")
-            st.audio(bufIO.getvalue(), format="audio/wav")
-            if final_sec<orig_sec:
-                st.success(f"Gagné {human_time(orig_sec-final_sec)}.")
-        except Exception as e:
-            st.error(f"Erreur Prétraitement : {e}")
+        for idx, (audio_bytes, rename) in enumerate(segments):
+            st.write(f"### Segment #{idx+1}: {rename}")
+            # Sauvegarder localement
+            local_path = f"temp_input_{idx}.wav"
+            with open(local_path, "wb") as ff:
+                ff.write(audio_bytes)
+            # Charger AudioSegment
+            try:
+                seg = AudioSegment.from_file(local_path)
+                orig_sec = len(seg) / 1000.0
+                if remove_sil:
+                    seg = remove_silences_classic(seg, min_silence_len, silence_thresh, keep_silence)
+                if abs(speed_factor - 1.0) > 1e-2:
+                    seg = accelerate_ffmpeg(seg, speed_factor)
+                final_sec = len(seg) / 1000.0
+                st.write(f"Durée Finale : {human_time(final_sec)}")
+                # Export transformé
+                transformed_path = f"temp_transformed_{idx}.wav"
+                seg.export(transformed_path, format="wav")
+            except Exception as e:
+                st.error(f"Erreur lors des transformations pour le segment #{idx+1}: {e}")
+                os.remove(local_path)
+                continue
 
-    api_keys = []
-    key_ids = []
-    for k in st.secrets:
-        if k.startswith("NOVA"):
-            api_keys.append(st.secrets[k])
-            key_ids.append(k)
-    if not api_keys:
-        st.sidebar.error("Pas de clé API config.")
-        st.stop()
+            # Transcription
+            try:
+                if double_mode:
+                    # Double transcription: Nova2 + WhisperLarge
+                    st.info("Transcription Nova2 en cours...")
+                    transcript_nova2, success_nova2 = nova_api.transcribe_audio(
+                        transformed_path,
+                        api_key_manager,
+                        language=lang_choice,
+                        model_name="nova-2"
+                    )
+                    if success_nova2:
+                        st.success("Transcription Nova2 terminée.")
+                    else:
+                        st.error("Transcription Nova2 échouée.")
 
-    if final_aud and st.button("Transcrire"):
-        try:
-            st.info("Traitement en cours...")
-            dur_s = len(final_aud)/1000.0
-            startT = time.time()
+                    st.info("Transcription WhisperLarge en cours...")
+                    transcript_whisper, success_whisper = nova_api.transcribe_audio(
+                        transformed_path,
+                        api_key_manager,
+                        language=lang_choice,
+                        model_name="whisper-large"
+                    )
+                    if success_whisper:
+                        st.success("Transcription WhisperLarge terminée.")
+                    else:
+                        st.error("Transcription WhisperLarge échouée.")
 
-            from_aud = AudioSegment.from_file(io.BytesIO(audio_data))
-            origin_sec = len(from_aud)/1000.0
+                    # Affichage des résultats
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Nova2")
+                        st.text_area("", transcript_nova2, height=150)
+                        copy_to_clipboard(transcript_nova2)
+                    with col2:
+                        st.subheader("WhisperLarge")
+                        st.text_area("", transcript_whisper, height=150)
+                        copy_to_clipboard(transcript_whisper)
 
-            if accessibility:
-                sel = select_api_keys(credits, key_ids, dur_s)
-                if len(sel)<2:
-                    st.error("Pas assez de clés API pour double.")
-                    st.stop()
-                kid1, c1 = sel[0]
-                kid2, c2 = sel[1]
-                with open("temp_in.wav","wb") as ff:
-                    final_aud.export(ff, format="wav")
-                t1 = nova_api.transcribe_audio("temp_in.wav", st.secrets[kid1], language_selection, "nova-2")
-                st.write("1ère transcription terminée ? En attente de la seconde...")
-                t2 = nova_api.transcribe_audio("temp_in.wav", st.secrets[kid2], language_selection, "whisper-large")
-                elapsed = time.time()-startT
-                if t1 and t2:
-                    st.success(f"Double transcription terminée en {elapsed:.1f}s.")
-                    cL,cR = st.columns(2)
-                    with cL:
-                        st.subheader("Résultat Nova 2")
-                        st.text_area("Texte Nova 2", t1, height=180)
-                        copy_to_clipboard(t1)
-                    with cR:
-                        st.subheader("Résultat Whisper Large")
-                        st.text_area("Texte Whisper", t2, height=180)
-                        copy_to_clipboard(t2)
-                    gain=0
-                    if dur_s<origin_sec:
-                        gain = origin_sec-dur_s
-                    st.write(f"Durée Finale : {human_time(dur_s)} (gagné {human_time(gain)}) | Temps={human_time(elapsed)} | Coût=~${c1+c2:.2f}")
-                    alias1 = generate_alias(6) if not file_name else file_name+"_Nova2"
-                    alias2 = generate_alias(6) if not file_name else file_name+"_Whisper"
-                    e1 = {
-                        "Alias/Nom": alias1,
-                        "Méthode": "Nova 2",
-                        "Modèle": "nova-2",
-                        "Durée": human_time(origin_sec),
-                        "Temps": human_time(elapsed),
-                        "Coût": f"${c1:.2f}",
-                        "Transcription": t1,
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Audio Binaire": audio_data.hex()
-                    }
-                    e2 = {
-                        "Alias/Nom": alias2,
-                        "Méthode": "Whisper Large",
-                        "Modèle": "whisper-large",
-                        "Durée": human_time(origin_sec),
-                        "Temps": human_time(elapsed),
-                        "Coût": f"${c2:.2f}",
-                        "Transcription": t2,
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Audio Binaire": audio_data.hex()
-                    }
-                    st.session_state["history"].extend([e1,e2])
-                    save_history(st.session_state["history"])
-                    st.success("Historique mis à jour.")
-                    credits[kid1] -= c1
-                    credits[kid2] -= c2
-                    save_credits(credits)
-                if os.path.exists("temp_in.wav"):
-                    os.remove("temp_in.wav")
-            else:
-                sel = select_api_keys(credits, key_ids, dur_s)
-                if len(sel)<1:
-                    st.error("Aucune clé API dispo.")
-                    st.stop()
-                kId, cst = sel[0]
-                with open("temp_in.wav","wb") as ff:
-                    final_aud.export(ff, format="wav")
-                trans = nova_api.transcribe_audio("temp_in.wav", st.secrets[kId], language_selection, chosen_model)
-                elapsed = time.time()-startT
-                if trans:
-                    st.success(f"Transcription terminée en {elapsed:.1f}s.")
-                    st.text_area("Texte Transcrit", trans, height=180)
-                    copy_to_clipboard(trans)
-                    gain=0
-                    if dur_s<origin_sec:
-                        gain=origin_sec-dur_s
-                    st.write(f"Durée Finale : {human_time(dur_s)} (gagné {human_time(gain)}) | Temps={human_time(elapsed)} | Coût=~${cst:.2f}")
-                    aliasx = generate_alias(6) if not file_name else file_name
-                    eX = {
-                        "Alias/Nom": aliasx,
-                        "Méthode": chosen_model,
-                        "Modèle": chosen_model,
-                        "Durée": human_time(origin_sec),
-                        "Temps": human_time(elapsed),
-                        "Coût": f"${cst:.2f}",
-                        "Transcription": trans,
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Audio Binaire": audio_data.hex()
-                    }
-                    st.session_state["history"].append(eX)
-                    save_history(st.session_state["history"])
-                    st.success("Historique mis à jour.")
-                    credits[kId] -= cst
-                    save_credits(credits)
-                if os.path.exists("temp_in.wav"):
-                    os.remove("temp_in.wav")
-        except Exception as e:
-            st.error(f"Erreur Transcription : {e}")
+                    # Calcul du coût
+                    total_cost = final_sec * COST_PER_SEC * 2  # Deux modèles
+                    elapsed_time = time.time() - start_time
 
-    display_history()
+                    # Sauvegarder dans l'historique
+                    transcriptions.append({
+                        "audio_name": rename,
+                        "double_mode": True,
+                        "model_nova2": "nova-2",
+                        "transcript_nova2": transcript_nova2,
+                        "model_whisper": "whisper-large",
+                        "transcript_whisper": transcript_whisper,
+                        "duration": human_time(orig_sec),
+                        "elapsed_time": human_time(elapsed_time),
+                        "cost": f"${total_cost:.2f}",
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
+                else:
+                    # Simple transcription
+                    st.info(f"Transcription {model_choice} en cours...")
+                    model = model_map[model_choice]
+                    transcript, success = nova_api.transcribe_audio(
+                        transformed_path,
+                        api_key_manager,
+                        language=lang_choice,
+                        model_name=model
+                    )
+                    if success:
+                        st.success("Transcription terminée.")
+                        st.text_area("", transcript, height=150)
+                        copy_to_clipboard(transcript)
 
-def main_wrapper():
+                        # Calcul du coût
+                        total_cost = final_sec * COST_PER_SEC
+                        elapsed_time = time.time() - start_time
+
+                        # Sauvegarder dans l'historique
+                        transcriptions.append({
+                            "audio_name": rename,
+                            "double_mode": False,
+                            "model": model,
+                            "transcript": transcript,
+                            "duration": human_time(orig_sec),
+                            "elapsed_time": human_time(elapsed_time),
+                            "cost": f"${total_cost:.2f}",
+                            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
+                    else:
+                        st.error(f"Échec de la transcription {model_choice}.")
+
+            except Exception as e:
+                st.error(f"Erreur lors de la transcription pour le segment #{idx+1}: {e}")
+            finally:
+                # Nettoyage des fichiers temporaires
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                if os.path.exists(transformed_path):
+                    os.remove(transformed_path)
+
+        # Sauvegarder toutes les transcriptions
+        save_history(transcriptions)
+        elapsed_time = time.time() - start_time
+        st.success(f"Toutes les transcriptions sont terminées en {human_time(elapsed_time)}.")
+
+if __name__ == "__main__":
     main()
-
-if __name__=="__main__":
-    main_wrapper()
+    reset_app()
