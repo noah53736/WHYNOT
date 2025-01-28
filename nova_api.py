@@ -1,4 +1,5 @@
 # nova_api.py
+
 import os
 import requests
 import streamlit as st
@@ -13,6 +14,10 @@ def transcribe_audio(
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
+    """
+    Transcrit un fichier audio local (file_path) en utilisant DeepGram (dg_api_key).
+    Retourne la transcription ou une chaîne vide en cas d'erreur.
+    """
     temp_in = "temp_audio.wav"
     try:
         audio = AudioSegment.from_file(file_path)
