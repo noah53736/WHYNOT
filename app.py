@@ -169,12 +169,12 @@ def main():
                 else:
                     key = get_next_key(api_keys)
 
-                # Transcription des chunks
+                # Transcription des chunks avec barre de progression
                 transcripts = []
                 costs = []
-                progress_bar = st.progress(0)
                 total_chunks = len(chunk_files) * (2 if accessibility else 1)
                 current_chunk = 0
+                progress_bar = st.progress(0)
 
                 for chunk_file in chunk_files:
                     if accessibility:
@@ -279,7 +279,10 @@ def main():
                         }
                         st.session_state["history"].append(entry)
 
-        # Affichage de l'historique et de l'aperçu audio
+        except Exception as e:
+            st.error(f"Erreur lors de la transcription : {e}")
+
+    # Affichage de l'historique et de l'aperçu audio
         display_history(st.session_state["history"])
 
         st.write("---")
@@ -287,5 +290,5 @@ def main():
         for en in st.session_state["history"]:
             st.audio(bytes.fromhex(en["Audio Binaire"]), format="audio/wav")
 
-if __name__ == "__main__":
-    main()
+    if __name__ == "__main__":
+        main()
