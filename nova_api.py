@@ -20,12 +20,12 @@ def transcribe_audio(
     """
     temp_in = "temp_audio.wav"
     try:
-        # Convertir en 16kHz WAV
+        # Convertir en 16kHz WAV mono
         audio = AudioSegment.from_file(file_path)
         audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio_16k.export(temp_in, format="wav")
 
-        # Paramètres
+        # Paramètres de la requête
         params = {
             "language": language,
             "model": model_name,
