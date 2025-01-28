@@ -152,11 +152,36 @@ def main():
     st.title("NBL Audio : Transcription")
     st.markdown("Choisissez votre source audio (fichier, micro, ou multi), configurez les options dans la barre latérale, puis lancez la transcription.")
 
-    # Barre latérale : options
+    # Barre latérale : options d'accessibilité
     st.sidebar.header("Options d'Accessibilité")
-    st.sidebar.markdown("### Accessibilité")
-    st.sidebar.checkbox("Mode sombre", value=st.session_state.get("dark_mode", False), key="dark_mode")
-    st.sidebar.slider("Taille du texte", 12, 24, 16, key="font_size")
+    dark_mode = st.sidebar.checkbox("Mode sombre", value=st.session_state.get("dark_mode", False), key="dark_mode")
+    font_size = st.sidebar.slider("Taille du texte", 12, 24, 16, key="font_size")
+
+    # Appliquer le mode sombre si sélectionné
+    if dark_mode:
+        st.markdown(
+            """
+            <style>
+            body {
+                background-color: #2e2e2e;
+                color: white;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Ajuster la taille du texte
+    st.markdown(
+        f"""
+        <style>
+        .reportview-container {{
+            font-size: {font_size}px;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
     st.sidebar.write("---")
     st.sidebar.header("Paramètres de Transcription")
@@ -165,7 +190,6 @@ def main():
     lang_choice = st.sidebar.radio(
         "Langue de la transcription :",
         options=["Français", "Anglais", "Espagnol", "Allemand", "Italien", "Portugais", "Japonais", "Coréen", "Chinois"],
-        format_func=lambda x: x.lower(),
         horizontal=True
     )
     lang_map = {
