@@ -1,3 +1,4 @@
+# nova_api.py
 import os
 import requests
 import streamlit as st
@@ -11,10 +12,10 @@ def transcribe_audio(
     model_name: str = "nova-2",
     punctuate: bool = True,
     numerals: bool = True
-) -> str:
+) -> (str, bool):
     """
     Envoie le fichier audio à DeepGram pour transcription (Nova ou Whisper).
-    Retourne la transcription en chaîne de caractères.
+    Retourne la transcription et un booléen indiquant le succès.
     """
     temp_in = "temp_audio.wav"
     try:
@@ -47,15 +48,19 @@ def transcribe_audio(
                 j.get("results",{})
                  .get("channels",[{}])[0]
                  .get("alternatives",[{}])[0]
-                 .get("transcript","")
+                 .get("transcript",""),
+                True
             )
         else:
             st.error(f"[DeepGram] Erreur {resp.status_code}: {resp.text}")
-            return ""
+            if resp.status_code == 401:
+                # Invalid credentials
+                return "", False
+            return "", False
     except Exception as e:
         st.error(f"[DeepGram] Exception : {e}")
         traceback.print_exc()
-        return ""
+        return "", False
     finally:
         if os.path.exists(temp_in):
             os.remove(temp_in)
