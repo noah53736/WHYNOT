@@ -2,7 +2,6 @@
 import streamlit as st
 import os
 import io
-import time
 import random
 import string
 from datetime import datetime
@@ -13,6 +12,8 @@ import nova_api
 def init_history():
     if "history" not in st.session_state:
         st.session_state["history"] = []
+    if "key_index" not in st.session_state:
+        st.session_state["key_index"] = 0
 
 def generate_alias(length=5):
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -74,7 +75,9 @@ def main():
     audio_data = []
     file_names = []
 
+    # Choix du type d'entrée
     input_type = st.radio("Type d'Entrée :", ["Fichier (Upload)", "Micro (Enregistrement)"], key="input_type")
+
     if input_type == "Fichier (Upload)":
         upf = st.file_uploader("Importer l'audio", type=["mp3","wav","m4a","ogg","webm"], accept_multiple_files=True, key="file_uploader")
         if upf:
@@ -86,11 +89,15 @@ def main():
                     file_names.append(file.name)
                     st.audio(file, format=file.type)
     else:
-        mic_input = st.audio_input("Micro", key="audio_input")
-        if mic_input:
-            audio_data.append(mic_input.read())
-            file_names.append("Microphone")
-            st.audio(mic_input, format=mic_input.type)
+        # Choix du nombre de microphones (limité à 4)
+        max_mics = 4
+        num_mics = st.number_input("Nombre de microphones à utiliser :", min_value=1, max_value=max_mics, step=1, key="num_mics")
+        for i in range(int(num_mics)):
+            mic_input = st.audio_input(f"Microphone {i+1}", key=f"audio_input_{i}")
+            if mic_input:
+                audio_data.append(mic_input.read())
+                file_names.append(f"Microphone {i+1}")
+                st.audio(mic_input, format=mic_input.type)
 
     st.write("---")
     st.write("## Options de Transcription")
@@ -104,10 +111,6 @@ def main():
             language_selection = "fr"  # Valeur par défaut ou ignorée
 
     accessibility = st.checkbox("Double Transcription (Nova 2 et Whisper Large)", key="double_transcription")
-
-    # Initialiser l'index de clé si ce n'est pas déjà fait
-    if "key_index" not in st.session_state:
-        st.session_state["key_index"] = 0
 
     # Bouton pour lancer la transcription
     if st.button("Transcrire") and audio_data:
@@ -128,15 +131,12 @@ def main():
 
                 # Déterminer si la segmentation est nécessaire
                 needs_segmentation = False
-                if accessibility and model_selection == "Whisper Large" and len(data) > 20*1024*1024:
-                    needs_segmentation = True
-                elif not accessibility and model_selection == "Whisper Large" and len(data) > 20*1024*1024:
+                if model_selection == "Whisper Large" and len(data) > 20*1024*1024:
                     needs_segmentation = True
 
                 if needs_segmentation:
-                    st.info("Fichier trop volumineux, segmentation en morceaux de 20MB.")
-                    # Approximation : durée en secondes pour 20MB
-                    # Cela dépend du bitrate, ici on suppose 1 MB ~ 1 seconde
+                    st.info("Fichier trop volumineux, segmentation en morceaux de 20 secondes.")
+                    # Segmentation en 20 secondes
                     chunk_duration = 20  # secondes
                     chunks = [seg[i*chunk_duration*1000:(i+1)*chunk_duration*1000] for i in range((len(seg) // (chunk_duration*1000)) + 1)]
                 else:
@@ -167,13 +167,11 @@ def main():
                     dur_s = len(AudioSegment.from_file(chunk_file))/1000.0
                     if accessibility:
                         # Transcription avec Nova 2
-                        trans1 = nova_api.transcribe_audio(chunk_file, key1, "fr", "nova-2")  # Nova 2 ne supporte pas le choix de langue
-                        # Vérifier si Nova 2 a réussi
+                        trans1 = nova_api.transcribe_audio(chunk_file, key1, "fr", "nova-2")
                         if not trans1:
                             st.warning("Transcription Nova 2 échouée, segmentation et retranscription.")
-                            # Segmentation et retranscription Nova 2
-                            chunk_duration_nova = 20  # secondes
-                            nova_chunks = [seg[i*chunk_duration_nova*1000:(i+1)*chunk_duration_nova*1000] for i in range((len(seg) // (chunk_duration_nova*1000)) + 1)]
+                            # Segmentation et retranscription Nova 2 en 20 secondes
+                            nova_chunks = [seg[i*chunk_duration*1000:(i+1)*chunk_duration*1000] for i in range((len(seg) // (chunk_duration*1000)) + 1)]
                             for j, nova_chunk in enumerate(nova_chunks):
                                 temp_nova = f"temp_nova_{idx}_{j}.wav"
                                 nova_chunk.export(temp_nova, format="wav")
@@ -203,7 +201,7 @@ def main():
                     transcriptions.append({"Nova 2": full_trans_nova, "Whisper Large": full_trans_whisper})
                 else:
                     if model_selection == "Whisper Large":
-                        full_trans = " ".join([t["Whisper Large"] for t in transcripts])
+                        full_trans = " ".join([t["whisper-large"] for t in transcripts])
                         transcriptions.append({model_selection: full_trans})
                     else:
                         full_trans = " ".join([t["Nova 2"] for t in transcripts])
@@ -214,15 +212,15 @@ def main():
                 # Affichage des résultats immédiatement après chaque transcription
                 for trans in transcriptions:
                     if accessibility:
-                        st.success("Double transcription terminée.")
+                        st.success(f"Double transcription du Fichier {idx+1} terminée.")
                         cL, cR = st.columns(2)
                         with cL:
                             st.subheader("Résultat Nova 2")
-                            st.text_area("Texte Nova 2", trans["Nova 2"], height=180)
+                            st.text_area(f"Texte Nova 2 - Fichier {idx+1}", trans["Nova 2"], height=180)
                             copy_to_clipboard(trans["Nova 2"])
                         with cR:
                             st.subheader("Résultat Whisper Large")
-                            st.text_area("Texte Whisper Large", trans["Whisper Large"], height=180)
+                            st.text_area(f"Texte Whisper Large - Fichier {idx+1}", trans["Whisper Large"], height=180)
                             copy_to_clipboard(trans["Whisper Large"])
 
                         alias1 = generate_alias(6) if not file_names[idx] else f"{file_names[idx]}_Nova2_{idx+1}"
@@ -251,8 +249,8 @@ def main():
                         }
                         st.session_state["history"].extend([entry1, entry2])
                     else:
-                        st.success("Transcription terminée.")
-                        st.text_area("Texte Transcrit", trans[model_selection], height=180)
+                        st.success(f"Transcription du Fichier {idx+1} terminée.")
+                        st.text_area(f"Texte Transcrit - Fichier {idx+1}", trans[model_selection], height=180)
                         copy_to_clipboard(trans[model_selection])
 
                         alias = generate_alias(6) if not file_names[idx] else f"{file_names[idx]}_{model_selection}_{idx+1}"
@@ -269,8 +267,8 @@ def main():
                         }
                         st.session_state["history"].append(entry)
 
-            except Exception as e:
-                st.error(f"Erreur lors de la transcription : {e}")
+        except Exception as e:
+            st.error(f"Erreur lors de la transcription : {e}")
 
     # Affichage de l'historique et de l'aperçu audio
     display_history(st.session_state["history"])
@@ -280,5 +278,5 @@ def main():
     for en in st.session_state["history"]:
         st.audio(bytes.fromhex(en["Audio Binaire"]), format="audio/wav")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
