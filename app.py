@@ -1,4 +1,5 @@
 # app.py
+
 import streamlit as st
 import os
 import io
@@ -9,26 +10,33 @@ from pydub import AudioSegment
 import nova_api
 import time
 
+#######################
+#   INITIALISATIONS   #
+#######################
 def init_state():
     if "history" not in st.session_state:
         st.session_state["history"] = []
-
-    # Index de clé (on ne segmente pas, on ne tourne pas de multiples fois)
     if "dg_key_index" not in st.session_state:
         st.session_state["dg_key_index"] = 0
+    if "pwd_attempts" not in st.session_state:
+        st.session_state["pwd_attempts"] = 0
+    if "authorized" not in st.session_state:
+        st.session_state["authorized"] = False
+    if "blocked" not in st.session_state:
+        st.session_state["blocked"] = False
 
 def get_dg_keys():
-    """ Récupère toutes les clés API DeepGram depuis secrets. """
+    """Récupère les clés API depuis st.secrets (NOVA...)."""
     return [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
 
 def pick_key(keys):
-    """ Simple : on prend la clé courante, pas de rotation multiple. """
+    """On prend la clé courante, index dg_key_index, sans rotation multiple."""
     if not keys:
         return None
     idx = st.session_state["dg_key_index"]
-    if idx>=len(keys):
+    if idx >= len(keys):
         st.session_state["dg_key_index"] = 0
-        idx=0
+        idx = 0
     return keys[idx]
 
 def generate_alias(length=5):
@@ -61,48 +69,68 @@ def copy_to_clipboard(txt):
     """
     st.components.v1.html(script_html)
 
-def display_history():
-    st.sidebar.write("---")
-    st.sidebar.header("Historique")
-    h = st.session_state["history"]
-    if h:
-        table = []
-        for en in h:
-            table.append({
-                "Alias/Nom": en["Alias/Nom"],
-                "Méthode": en["Méthode"],
-                "Modèle": en["Modèle"],
-                "Durée": en["Durée"],
-                "Temps": en["Temps"],
-                "Coût": en["Coût"],
-                "Date": en["Date"]
-            })
-        st.sidebar.table(table[::-1])
-    else:
-        st.sidebar.info("Historique vide.")
+########################
+#   MOT DE PASSE PAGE  #
+########################
+def password_protect():
+    st.title("Accès Protégé")
+    st.info("Veuillez entrer le code à 4 chiffres.")
+    code_input = st.text_input("Code:", value="", max_chars=4, type="password")
+    if st.button("Valider"):
+        if st.session_state["pwd_attempts"]>=4:
+            st.warning("Vous avez atteint le nombre maximum de tentatives.")
+            st.session_state["blocked"] = True
+            return
+        app_pwd = st.secrets.get("APP_PWD", "1234")  # fallback
+        if code_input == app_pwd:
+            st.session_state["authorized"] = True
+            st.success("Mot de passe correct, accès autorisé.")
+        else:
+            st.session_state["pwd_attempts"] += 1
+            att = st.session_state["pwd_attempts"]
+            st.error(f"Mot de passe incorrect (Tentative {att}/4).")
 
-############################################
-def main():
+############################
+#   SEGMENTATION SI LARGE  #
+############################
+def chunk_if_needed(raw_data: bytes, max_size=25*1024*1024):
+    """
+    Si le fichier dépasse 'max_size', on segmente en 25MB approx.
+    SANS manip avancée, on coupe en blocs uniformes. 
+    Pas de prise en compte des phrases.
+    """
+    if len(raw_data)<=max_size:
+        return [AudioSegment.from_file(io.BytesIO(raw_data))]
+    st.info("Segmentation du fichier car trop volumineux pour Whisper Large.")
+    full_seg = AudioSegment.from_file(io.BytesIO(raw_data))
+    segments = []
+    step_ms = int(len(full_seg)*(max_size/len(raw_data)))
+    start = 0
+    while start<len(full_seg):
+        end = min(start+step_ms, len(full_seg))
+        segments.append(full_seg[start:end])
+        start = end
+    return segments
+
+#######################
+#  LOGIQUE PRINCIPALE #
+#######################
+def app_main():
     st.set_page_config(page_title="NBL Audio", layout="wide")
     st.title("NBL Audio")
 
-    init_state()
-    dg_keys = get_dg_keys()
-    if not dg_keys:
-        st.error("Aucune clé DeepGram n'est configurée.")
-        st.stop()
-
-    history = st.session_state["history"]
-
-    st.subheader("Entrée Audio")
+    # Micro par défaut => radio index=1
+    source_type = st.radio("Source Audio", ["Fichier (Upload)", "Micro (Enregistrement)"], index=1)
     audio_data_list = []
     file_names = []
 
-    input_type = st.radio("Source audio", ["Fichier (Upload)","Micro (Enregistrement)"], index=0)
-    if input_type=="Fichier (Upload)":
-        uploaded_files = st.file_uploader("Fichiers audio", type=["mp3","wav","m4a","ogg","webm"], accept_multiple_files=True)
-        if uploaded_files:
-            for f in uploaded_files:
+    if source_type=="Fichier (Upload)":
+        upfs = st.file_uploader("Importer des fichiers audio", 
+            type=["mp3","wav","m4a","ogg","webm"],
+            accept_multiple_files=True
+        )
+        if upfs:
+            for f in upfs:
                 audio_data_list.append(f.read())
                 file_names.append(f.name)
                 st.audio(f, format=f.type)
@@ -117,114 +145,199 @@ def main():
 
     st.write("---")
     st.subheader("Options de Transcription")
-    colA, colB = st.columns([1,1])
-    with colA:
-        model_main = st.selectbox("Modèle Principal :", ["Nova 2","Whisper Large"])
-    with colB:
-        lang_main = "fr"
-        if model_main=="Whisper Large":
-            lang_main = st.selectbox("Langue (Whisper) :", ["fr","en"])
+    # Double Trans plus didactique
+    st.markdown("""**Double Transcription** : Utilise 2 IA successives :
+- Nova 2 : plus rapide, 
+- Whisper Large : plus précise (jusqu'à 99%).""")
 
-    double_trans = st.checkbox("Double Transcription (Nova 2 puis Whisper)", value=False)
+    col1, col2 = st.columns([1,1])
+    with col1:
+        model_choice = st.selectbox("Modèle Principal :", ["Nova 2", "Whisper Large"])
+    with col2:
+        lang_main = "fr"
+        if model_choice=="Whisper Large":
+            lang_main = st.selectbox("Langue pour Whisper", ["fr","en"])
+
+    double_trans = st.checkbox("Activer Double Transcription (Nova puis Whisper)")
 
     if st.button("Transcrire") and audio_data_list:
-        st.info("Transcription en cours ...")
-        for idx, raw in enumerate(audio_data_list):
-            seg = AudioSegment.from_file(io.BytesIO(raw))
-            dur_s = len(seg)/1000.0
+        st.info("Démarrage de la transcription...")
+        dg_keys = get_dg_keys()
+        if not dg_keys:
+            st.error("Pas de clé API configurée.")
+            st.stop()
+
+        for idx, raw_data in enumerate(audio_data_list):
             f_name = file_names[idx] if idx<len(file_names) else f"Fichier_{idx+1}"
+            audio_seg = AudioSegment.from_file(io.BytesIO(raw_data))
+            dur_s = len(audio_seg)/1000.0
+            st.write(f"### Fichier {idx+1}: {f_name}  (Durée: {human_time(dur_s)})")
 
-            st.write(f"### Fichier {idx+1}: {f_name}")
-            st.write(f"Durée : {human_time(dur_s)}")
+            # Si Whisper Large ou double => on segmente si trop grand
+            do_segment = False
+            if (model_choice=="Whisper Large" or double_trans) and len(raw_data)>25*1024*1024:
+                do_segment = True
 
-            temp_wav = f"temp_input_{idx}.wav"
-            seg.export(temp_wav, format="wav")
+            if do_segment:
+                # On segmente
+                segs = chunk_if_needed(raw_data, max_size=25*1024*1024)
+            else:
+                # Unique
+                segs = [audio_seg]
+
+            # Exporter en .wav => 1 ou plusieurs
+            chunk_files = []
+            for s_i, s_seg in enumerate(segs):
+                tmpf = f"temp_{idx}_{s_i}.wav"
+                s_seg.export(tmpf, format="wav")
+                chunk_files.append(tmpf)
 
             if double_trans:
-                # 1) Nova 2
+                # 1) Nova
+                st.write(f"**{f_name} => Nova 2**")
                 start_nova = time.time()
-                dg_key_nova = pick_key(dg_keys)
-                txt_nova = nova_api.transcribe_audio(temp_wav, dg_key_nova, "fr", "nova-2")
+                txt_nova_list = []
+                for cf in chunk_files:
+                    key_nova = pick_key(dg_keys)
+                    txt_nova_piece = nova_api.transcribe_audio(cf, key_nova, "fr", "nova-2")
+                    txt_nova_list.append(txt_nova_piece)
                 end_nova = time.time()
+                final_nova = " ".join(txt_nova_list)
 
-                cA, cB = st.columns(2)
-                with cA:
-                    st.subheader("Résultat Nova 2")
-                    st.text_area(f"Nova 2 - {f_name}", txt_nova, height=150)
-                    copy_to_clipboard(txt_nova)
+                # 2) Whisper
+                st.write(f"**{f_name} => Whisper Large**")
+                start_whisp = time.time()
+                txt_whisp_list = []
+                for cf2 in chunk_files:
+                    key_whisp = pick_key(dg_keys)
+                    txt_whisp_piece = nova_api.transcribe_audio(cf2, key_whisp, lang_main, "whisper-large")
+                    txt_whisp_list.append(txt_whisp_piece)
+                end_whisp = time.time()
+                final_whisp = " ".join(txt_whisp_list)
 
-                eN = {
-                    "Alias/Nom": f"{f_name}_NOVA2",
+                # Affichage côte à côte
+                colL, colR = st.columns(2)
+                with colL:
+                    st.subheader(f"NOVA 2 - {f_name}")
+                    st.text_area(f"Résultat Nova2 - {f_name}", final_nova, height=150, key=f"nova2_{idx}")
+                    copy_to_clipboard(final_nova)
+                    st.write(f"Temps: {end_nova - start_nova:.1f}s")
+
+                with colR:
+                    st.subheader(f"WHISPER LARGE - {f_name}")
+                    st.text_area(f"Résultat Whisper - {f_name}", final_whisp, height=150, key=f"whisper_{idx}")
+                    copy_to_clipboard(final_whisp)
+                    st.write(f"Temps: {end_whisp - start_whisp:.1f}s")
+
+                # Historique interne (pas affiché en tableau)
+                eNova = {
+                    "Alias/Nom": f"{f_name}_Nova2",
                     "Méthode": "Nova 2",
                     "Modèle": "nova-2",
                     "Durée": human_time(dur_s),
-                    "Temps": f"{end_nova - start_nova:.1f}s",
+                    "Temps": f"{(end_nova - start_nova):.1f}s",
                     "Coût": "?",
-                    "Transcription": txt_nova,
+                    "Transcription": final_nova,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": raw.hex()
+                    "Audio Binaire": raw_data.hex()
                 }
-                st.session_state["history"].append(eN)
-
-                # 2) Whisper Large
-                start_whisper = time.time()
-                dg_key_whisper = pick_key(dg_keys)
-                txt_whisp = nova_api.transcribe_audio(temp_wav, dg_key_whisper, lang_main, "whisper-large")
-                end_whisper = time.time()
-
-                with cB:
-                    st.subheader("Résultat Whisper Large")
-                    st.text_area(f"Whisper - {f_name}", txt_whisp, height=150)
-                    copy_to_clipboard(txt_whisp)
-
-                eW = {
-                    "Alias/Nom": f"{f_name}_WHISPER",
+                eWhisp = {
+                    "Alias/Nom": f"{f_name}_Whisper",
                     "Méthode": "Whisper Large",
                     "Modèle": "whisper-large",
                     "Durée": human_time(dur_s),
-                    "Temps": f"{end_whisper - start_whisper:.1f}s",
+                    "Temps": f"{(end_whisp - start_whisp):.1f}s",
                     "Coût": "?",
-                    "Transcription": txt_whisp,
+                    "Transcription": final_whisp,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": raw.hex()
+                    "Audio Binaire": raw_data.hex()
                 }
-                st.session_state["history"].append(eW)
+                st.session_state["history"].extend([eNova,eWhisp])
+
             else:
                 # Simple
-                start_t = time.time()
-                dg_key_simple = pick_key(dg_keys)
-                chosen_model = "nova-2" if model_main=="Nova 2" else "whisper-large"
+                chosen_model = "nova-2" if model_choice=="Nova 2" else "whisper-large"
                 chosen_lang = "fr" if chosen_model=="nova-2" else lang_main
-                txt_single = nova_api.transcribe_audio(temp_wav, dg_key_simple, chosen_lang, chosen_model)
-                end_t = time.time()
+                st.write(f"**{f_name} => {model_choice}**")
+                start_simp = time.time()
+                list_simp = []
+                for cf3 in chunk_files:
+                    key_simp = pick_key(dg_keys)
+                    t_simp_piece = nova_api.transcribe_audio(cf3, key_simp, chosen_lang, chosen_model)
+                    list_simp.append(t_simp_piece)
+                end_simp = time.time()
+                final_simp = " ".join(list_simp)
 
-                cA, _ = st.columns([1,1])
-                with cA:
-                    st.subheader(f"Résultat {model_main}")
-                    st.text_area(f"{f_name}", txt_single, height=150)
-                    copy_to_clipboard(txt_single)
+                leftC, _ = st.columns([1,1])
+                with leftC:
+                    st.subheader(f"{model_choice} - {f_name}")
+                    st.text_area(
+                        "Résultat",
+                        final_simp,
+                        height=150,
+                        key=f"textarea_{idx}_{chosen_model}"
+                    )
+                    copy_to_clipboard(final_simp)
+                    st.write(f"Temps: {end_simp - start_simp:.1f}s")
 
-                eS = {
+                eSimple = {
                     "Alias/Nom": f"{f_name}_{chosen_model}",
-                    "Méthode": model_main,
+                    "Méthode": model_choice,
                     "Modèle": chosen_model,
                     "Durée": human_time(dur_s),
-                    "Temps": f"{end_t - start_t:.1f}s",
+                    "Temps": f"{(end_simp - start_simp):.1f}s",
                     "Coût": "?",
-                    "Transcription": txt_single,
+                    "Transcription": final_simp,
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Audio Binaire": raw.hex()
+                    "Audio Binaire": raw_data.hex()
                 }
-                st.session_state["history"].append(eS)
+                st.session_state["history"].append(eSimple)
 
-            if os.path.exists(temp_wav):
-                os.remove(temp_wav)
+            # Nettoyage des segments
+            for cfile in chunk_files:
+                if os.path.exists(cfile):
+                    os.remove(cfile)
 
-        display_history()
         st.write("---")
-        st.write("### Aperçu Audio")
+        st.write("### Aperçu Audio (Historique)")
         for en in st.session_state["history"]:
             st.audio(bytes.fromhex(en["Audio Binaire"]), format="audio/wav")
+
+def password_gate():
+    st.title("Accès Protégé (Mot de Passe)")
+    st.info("Veuillez saisir le code à 4 chiffres.")
+    code_in = st.text_input("Code:", value="", max_chars=4, type="password", key="pwd_in")
+    if st.button("Valider", key="pwd_valider"):
+        if st.session_state.get("blocked", False):
+            st.warning("Vous êtes bloqué.")
+            st.stop()
+        if st.session_state.get("pwd_attempts", 0)>=4:
+            st.error("Trop de tentatives. Session bloquée.")
+            st.session_state["blocked"] = True
+            st.stop()
+
+        real_pwd = st.secrets.get("APP_PWD","1234")
+        if code_in==real_pwd:
+            st.session_state["authorized"] = True
+            st.success("Accès autorisé.")
+        else:
+            st.session_state["pwd_attempts"] = st.session_state.get("pwd_attempts",0)+1
+            attempts = st.session_state["pwd_attempts"]
+            st.error(f"Mot de passe invalide. (Tentative {attempts}/4)")
+
+def main():
+    st.set_page_config(page_title="NBL Audio", layout="wide")
+    init_state()
+    if st.session_state["blocked"]:
+        st.error("Vous êtes bloqué suite à trop de tentatives.")
+        st.stop()
+
+    if not st.session_state.get("authorized",False):
+        password_gate()
+        if st.session_state.get("authorized",False):
+            app_main()
+    else:
+        app_main()
 
 def main_wrapper():
     try:
