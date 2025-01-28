@@ -152,43 +152,12 @@ def main():
     st.title("NBL Audio : Transcription")
     st.markdown("Choisissez votre source audio (fichier, micro, ou multi), configurez les options dans la barre latérale, puis lancez la transcription.")
 
-    # Barre latérale : options d'accessibilité
-    st.sidebar.header("Options d'Accessibilité")
-    dark_mode = st.sidebar.checkbox("Mode sombre", value=st.session_state.get("dark_mode", False), key="dark_mode")
-    font_size = st.sidebar.slider("Taille du texte", 12, 24, 16, key="font_size")
-
-    # Appliquer le mode sombre si sélectionné
-    if dark_mode:
-        st.markdown(
-            """
-            <style>
-            body {
-                background-color: #2e2e2e;
-                color: white;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
-    # Ajuster la taille du texte
-    st.markdown(
-        f"""
-        <style>
-        .reportview-container {{
-            font-size: {font_size}px;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
     st.sidebar.write("---")
     st.sidebar.header("Paramètres de Transcription")
 
-    # Sélection de la langue
+    # Sélection de la langue (applicable uniquement pour Whisper Large)
     lang_choice = st.sidebar.radio(
-        "Langue de la transcription :",
+        "Langue de Whisper Large :",
         options=["Français", "Anglais", "Espagnol", "Allemand", "Italien", "Portugais", "Japonais", "Coréen", "Chinois"],
         horizontal=True
     )
@@ -205,17 +174,6 @@ def main():
     }
     selected_lang = lang_map.get(lang_choice, "fr")
 
-    # Sélection du modèle
-    model_choice = st.sidebar.radio(
-        "Modèle de Transcription :",
-        options=["Nova II", "Whisper Large"],
-        horizontal=True
-    )
-    model_map = {"Nova II": "nova-2", "Whisper Large": "whisper-large"}
-
-    # Option de double transcription
-    double_mode = st.sidebar.checkbox("Double Transcription (Nova II + Whisper Large)")
-
     # Autres options
     remove_sil = st.sidebar.checkbox("Supprimer les silences", False)
     speed_factor = st.sidebar.slider("Accélération Audio", 0.5, 4.0, 1.0, 0.1)
@@ -227,6 +185,9 @@ def main():
     if not api_keys:
         st.sidebar.error("Aucune clé API disponible. Veuillez ajouter des clés dans les Secrets de l'application.")
         st.stop()
+
+    # Double transcription activée par défaut
+    double_mode = True  # Toujours activé
 
     # Choix du mode d'entrée
     st.write("## Mode d'Entrée")
@@ -303,173 +264,85 @@ def main():
                 continue
 
             # Sélection des clés API
-            if double_mode:
-                # Besoin de deux clés différentes
-                available_keys = [key for key in api_keys if key[0] not in used_keys]
-                if len(available_keys) < 2:
-                    st.error("Pas assez de clés API disponibles pour la double transcription.")
-                    os.remove(local_path)
-                    os.remove(transformed_path)
-                    continue
-                selected_keys = random.sample(available_keys, 2)
-                key1, name1 = selected_keys[0]
-                key2, name2 = selected_keys[1]
-                used_keys.extend([key1, key2])
-            else:
-                # Besoin d'une seule clé
-                available_keys = [key for key in api_keys if key[0] not in used_keys]
-                if not available_keys:
-                    st.error("Pas assez de clés API disponibles pour la transcription.")
-                    os.remove(local_path)
-                    os.remove(transformed_path)
-                    continue
-                selected_key = random.choice(available_keys)
-                key1, name1 = selected_key
-                used_keys.append(key1)
+            available_keys = [key for key in api_keys if key[0] not in used_keys]
+            if len(available_keys) < 2:
+                st.error("Pas assez de clés API disponibles pour la double transcription.")
+                os.remove(local_path)
+                os.remove(transformed_path)
+                continue
+            selected_keys = random.sample(available_keys, 2)
+            key_nova2, name_nova2 = selected_keys[0]
+            key_whisper, name_whisper = selected_keys[1]
+            used_keys.extend([key_nova2, key_whisper])
 
-            # Transcription
-            try:
-                if double_mode:
-                    # Double transcription: Nova II + Whisper Large
-                    st.info("Transcription Nova II en cours...")
-                    transcript_nova2, success_nova2 = nova_api.transcribe_audio(
-                        transformed_path,
-                        key1,
-                        language=selected_lang,
-                        model_name="nova-2"  # Assurez-vous que c'est le nom correct
-                    )
-                    if not success_nova2:
-                        st.warning("Erreur avec Nova II. Passage à une autre clé si disponible.")
-                        # Sélectionner une autre clé
-                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
-                        if remaining_keys:
-                            key1_new, name1_new = remaining_keys[0]
-                            transcript_nova2, success_nova2 = nova_api.transcribe_audio(
-                                transformed_path,
-                                key1_new,
-                                language=selected_lang,
-                                model_name="nova-2"
-                            )
-                            if success_nova2:
-                                used_keys.append(key1_new)
-                        else:
-                            st.error("Toutes les clés Nova II sont épuisées.")
-                            transcript_nova2 = "Erreur de transcription Nova II."
+            # Création des placeholders pour afficher les transcriptions dès qu'elles sont prêtes
+            placeholder_nova2 = st.empty()
+            placeholder_whisper = st.empty()
 
-                    if success_nova2:
-                        st.success("Transcription Nova II terminée.")
-                    else:
-                        st.error("Transcription Nova II échouée.")
-
-                    st.info("Transcription Whisper Large en cours...")
-                    transcript_whisper, success_whisper = nova_api.transcribe_audio(
-                        transformed_path,
-                        key2,
-                        language=selected_lang,
-                        model_name="whisper-large"
-                    )
-                    if not success_whisper:
-                        st.warning("Erreur avec Whisper Large. Passage à une autre clé si disponible.")
-                        # Sélectionner une autre clé
-                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
-                        if remaining_keys:
-                            key2_new, name2_new = remaining_keys[0]
-                            transcript_whisper, success_whisper = nova_api.transcribe_audio(
-                                transformed_path,
-                                key2_new,
-                                language=selected_lang,
-                                model_name="whisper-large"
-                            )
-                            if success_whisper:
-                                used_keys.append(key2_new)
-                        else:
-                            st.error("Toutes les clés Whisper Large sont épuisées.")
-                            transcript_whisper = "Erreur de transcription Whisper Large."
-
-                    if success_whisper:
-                        st.success("Transcription Whisper Large terminée.")
-                    else:
-                        st.error("Transcription Whisper Large échouée.")
-
-                    # Affichage des résultats
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("Nova II")
-                        st.text_area("", transcript_nova2, height=150)
-                        copy_to_clipboard(transcript_nova2)
-                    with col2:
-                        st.subheader("Whisper Large")
-                        st.text_area("", transcript_whisper, height=150)
-                        copy_to_clipboard(transcript_whisper)
-
-                    # Sauvegarder dans l'historique
+            # Transcription Nova II
+            def transcribe_nova2():
+                transcript, success = nova_api.transcribe_audio(
+                    transformed_path,
+                    key_nova2,
+                    language="fr",  # Langue non nécessaire pour Nova II si elle ne supporte pas la sélection
+                    model_name="nova-2"
+                )
+                if success:
+                    placeholder_nova2.success("Transcription Nova II terminée.")
+                    placeholder_nova2.text_area("Nova II", transcript, height=150)
+                    copy_to_clipboard(transcript)
+                    # Ajouter à l'historique
                     transcriptions.append({
                         "audio_name": rename,
                         "double_mode": True,
                         "model_nova2": "Nova II",
-                        "transcript_nova2": transcript_nova2,
+                        "transcript_nova2": transcript,
                         "model_whisper": "Whisper Large",
-                        "transcript_whisper": transcript_whisper,
+                        "transcript_whisper": "",
                         "duration": human_time(orig_sec),
                         "elapsed_time": human_time(time.time() - start_time),
                         "cost": f"${final_sec * COST_PER_SEC * 2:.2f}",
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                 else:
-                    # Simple transcription
-                    st.info(f"Transcription {model_choice} en cours...")
-                    transcript, success = nova_api.transcribe_audio(
-                        transformed_path,
-                        key1,
-                        language=selected_lang,
-                        model_name=model_map[model_choice]
-                    )
-                    if not success:
-                        st.warning(f"Erreur avec {model_choice}. Passage à une autre clé si disponible.")
-                        # Sélectionner une autre clé
-                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
-                        if remaining_keys:
-                            key1_new, name1_new = remaining_keys[0]
-                            transcript, success = nova_api.transcribe_audio(
-                                transformed_path,
-                                key1_new,
-                                language=selected_lang,
-                                model_name=model_map[model_choice]
-                            )
-                            if success:
-                                used_keys.append(key1_new)
-                        else:
-                            st.error(f"Échec de la transcription {model_choice} avec toutes les clés disponibles.")
-                            transcript = f"Erreur de transcription {model_choice}."
+                    placeholder_nova2.error("Erreur lors de la transcription Nova II.")
 
-                    if success:
-                        st.success("Transcription terminée.")
-                        st.text_area("", transcript, height=150)
-                        copy_to_clipboard(transcript)
+            # Transcription Whisper Large
+            def transcribe_whisper():
+                transcript, success = nova_api.transcribe_audio(
+                    transformed_path,
+                    key_whisper,
+                    language=selected_lang,
+                    model_name="whisper-large"
+                )
+                if success:
+                    placeholder_whisper.success("Transcription Whisper Large terminée.")
+                    placeholder_whisper.text_area("Whisper Large", transcript, height=150)
+                    copy_to_clipboard(transcript)
+                    # Mettre à jour l'historique avec la transcription Whisper Large
+                    for transcription in transcriptions:
+                        if transcription["audio_name"] == rename and transcription["double_mode"]:
+                            transcription["transcript_whisper"] = transcript
+                            break
+                else:
+                    placeholder_whisper.error("Erreur lors de la transcription Whisper Large.")
 
-                        # Sauvegarder dans l'historique
-                        transcriptions.append({
-                            "audio_name": rename,
-                            "double_mode": False,
-                            "model": model_map[model_choice],
-                            "transcript": transcript,
-                            "duration": human_time(orig_sec),
-                            "elapsed_time": human_time(time.time() - start_time),
-                            "cost": f"${final_sec * COST_PER_SEC:.2f}",
-                            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        })
-            except Exception as e:
-                st.error(f"Erreur lors de la transcription pour le segment #{idx+1}: {e}")
-            finally:
-                # Nettoyage des fichiers temporaires
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-                if os.path.exists(transformed_path):
-                    os.remove(transformed_path)
+            # Lancer les transcriptions dans des threads pour les exécuter simultanément
+            import threading
+            thread_nova2 = threading.Thread(target=transcribe_nova2)
+            thread_whisper = threading.Thread(target=transcribe_whisper)
+            thread_nova2.start()
+            thread_whisper.start()
+
+            # Nettoyage des fichiers temporaires après les transcriptions
+            thread_nova2.join()
+            thread_whisper.join()
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            if os.path.exists(transformed_path):
+                os.remove(transformed_path)
 
         # Sauvegarder toutes les transcriptions
-        if 'transcriptions' not in locals():
-            transcriptions = []
         save_history(transcriptions)
         elapsed_time = time.time() - start_time
         st.success(f"Toutes les transcriptions sont terminées en {human_time(elapsed_time)}.")
