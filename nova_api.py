@@ -39,6 +39,7 @@ def transcribe_audio(
             "Authorization": f"Token {dg_api_key}",
             "Content-Type": "audio/wav"
         }
+
         with open(temp_in, "rb") as f:
             payload = f.read()
 
