@@ -10,23 +10,10 @@ from datetime import datetime
 from pydub import AudioSegment
 import nova_api
 
-HISTORIQUE_FILE = "historique.json"
-
-# Initialisation de l'historique si nécessaire
+# Initialisation de l'historique dans le State de Streamlit
 def init_history():
-    if not os.path.exists(HISTORIQUE_FILE):
-        with open(HISTORIQUE_FILE, "w") as f:
-            json.dump([], f, indent=4)
-
-def load_history():
-    if not os.path.exists(HISTORIQUE_FILE):
-        init_history()
-    with open(HISTORIQUE_FILE, "r") as f:
-        return json.load(f)
-
-def save_history(hist):
-    with open(HISTORIQUE_FILE, "w") as f:
-        json.dump(hist, f, indent=4)
+    if "history" not in st.session_state:
+        st.session_state["history"] = []
 
 def generate_alias(length=5):
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -95,8 +82,7 @@ def main():
     st.set_page_config(page_title="N-B-L Audio", layout="wide")
     st.title("N-B-L Audio : Transcription Grand Public")
 
-    if "history" not in st.session_state:
-        st.session_state["history"] = load_history()
+    init_history()
     history = st.session_state["history"]
 
     st.write("## Options de Transcription")
@@ -141,8 +127,7 @@ def main():
             st.experimental_rerun()
     with cB:
         if st.button("Vider l'Historique"):
-            st.session_state["history"]=[]
-            save_history([])
+            st.session_state["history"] = []
             st.sidebar.success("Historique vidé.")
 
     if audio_data:
@@ -150,14 +135,18 @@ def main():
             # Gestion des fichiers multiples et segmentation si nécessaire
             transcriptions = []
             total_cost = 0
+            api_keys = [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
+            used_keys = []
+
             for idx, data in enumerate(audio_data):
                 seg = AudioSegment.from_file(io.BytesIO(data))
                 orig_sec = len(seg)/1000.0
                 st.write(f"**Fichier {idx+1}** - Durée Originale : {human_time(orig_sec)}")
 
-                # Segmentation intelligente si le fichier > 20MB (~ 20MB en WAV est approximativement 20MB, ajuster si nécessaire)
+                # Segmentation intelligente si le fichier > 20MB (~20MB en WAV est approximativement 20MB, ajuster si nécessaire)
                 if len(data) > 20*1024*1024:
                     st.info("Fichier trop volumineux, segmentation en morceaux de 20MB.")
+                    # Note: Une segmentation plus précise peut être nécessaire
                     chunks = seg[::20*1024*1024]  # Segmenter toutes les 20MB
                 else:
                     chunks = [seg]
@@ -170,15 +159,15 @@ def main():
                     chunk_files.append(temp_filename)
 
                 # Sélection des clés API
-                api_keys = [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
                 if accessibility:
-                    selected_keys = select_api_keys(api_keys, used_keys=[])
+                    selected_keys = select_api_keys(api_keys, used_keys=used_keys)
                     if len(selected_keys) < 2:
                         st.error("Pas assez de clés API pour double transcription.")
                         st.stop()
+                    used_keys.extend(selected_keys)
                 else:
-                    selected_keys = [api_keys[0]] if api_keys else []
-                    if not selected_keys:
+                    selected_keys = select_api_keys(api_keys, used_keys=used_keys)
+                    if len(selected_keys) < 1:
                         st.error("Aucune clé API disponible.")
                         st.stop()
 
@@ -235,7 +224,7 @@ def main():
                         "Méthode": "Nova 2",
                         "Modèle": "nova-2",
                         "Durée": human_time(orig_sec),
-                        "Temps": human_time(time.time()),  # Peut être amélioré pour refléter le temps réel
+                        "Temps": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Coût": f"${costs[2*idx]:.2f}",
                         "Transcription": trans["Nova 2"],
                         "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -246,7 +235,7 @@ def main():
                         "Méthode": "Whisper Large",
                         "Modèle": "whisper-large",
                         "Durée": human_time(orig_sec),
-                        "Temps": human_time(time.time()),  # Peut être amélioré pour refléter le temps réel
+                        "Temps": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Coût": f"${costs[2*idx+1]:.2f}",
                         "Transcription": trans["Whisper Large"],
                         "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -266,7 +255,7 @@ def main():
                         "Méthode": model,
                         "Modèle": chosen_model,
                         "Durée": human_time(orig_sec),
-                        "Temps": human_time(time.time()),  # Peut être amélioré pour refléter le temps réel
+                        "Temps": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Coût": f"${costs[idx]:.2f}",
                         "Transcription": list(trans.values())[0],
                         "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -274,7 +263,6 @@ def main():
                     }
                     st.session_state["history"].append(entry)
 
-            save_history(st.session_state["history"])
             st.success("Historique mis à jour.")
 
         except Exception as e:
