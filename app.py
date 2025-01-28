@@ -1,11 +1,13 @@
+# app.py
+
 import streamlit as st
 import os
 import requests
 import time
 import threading
-import subprocess
 from datetime import datetime
 from pydub import AudioSegment, silence
+import subprocess
 
 # -----------------------------------------------------------
 # CONFIGURATION ET CONSTANTES
@@ -121,13 +123,14 @@ def transcribe_deepgram(file_path: str,
         audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio_16k.export(temp_in, format="wav")
 
-        # Params de la requête
+        # Paramètres de la requête
         params = {
             "language": language,
             "model": model_name,
             "punctuate": "true",
             "numerals": "true"
         }
+        # Construction de l'URL
         qs = "&".join([f"{k}={v}" for k, v in params.items()])
         url = f"https://api.deepgram.com/v1/listen?{qs}"
         headers = {
@@ -163,7 +166,6 @@ def transcribe_deepgram(file_path: str,
         if os.path.exists(temp_in):
             os.remove(temp_in)
 
-
 # -----------------------------------------------------------
 # APPLICATION STREAMLIT (UN SEUL SCRIPT)
 # -----------------------------------------------------------
@@ -172,7 +174,7 @@ def main():
     st.title("Application Minimaliste : Nova II + Whisper Large")
     st.write("""
     Téléchargez un ou plusieurs fichiers audio (jusqu'à 15).  
-    Pour **chaque** fichier, on utilise **une clé API** (si dispo)  
+    Pour **chaque** fichier, on utilise **une clé API** (si disponible)  
     et on fait **2 transcriptions** : Nova II et Whisper Large.
     """)
 
@@ -190,14 +192,29 @@ def main():
     st.sidebar.write("---")
     st.sidebar.header("Options")
 
+    # Langue (pour Whisper Large)
     lang_choice = st.sidebar.radio(
         "Langue pour Whisper Large :",
-        ["fr","en","es","de","it","pt","ja","ko","zh"],
+        ["Français", "Anglais", "Espagnol", "Allemand", "Italien", "Portugais", "Japonais", "Coréen", "Chinois"],
         index=0
     )
-    remove_sil = st.sidebar.checkbox("Supprimer les silences ?", value=False)
+    lang_map = {
+        "Français": "fr",
+        "Anglais": "en",
+        "Espagnol": "es",
+        "Allemand": "de",
+        "Italien": "it",
+        "Portugais": "pt",
+        "Japonais": "ja",
+        "Coréen": "ko",
+        "Chinois": "zh"
+    }
+    selected_lang = lang_map.get(lang_choice, "fr")
+
+    remove_sil = st.sidebar.checkbox("Supprimer les silences", value=False)
     speed_factor = st.sidebar.slider("Accélération Audio", 0.5, 4.0, 1.0, 0.1)
 
+    # Clés API DeepGram
     st.sidebar.header("Clés API DeepGram")
     # On charge toutes les clés OVA1..OVA15 dans st.secrets
     api_keys = []
@@ -231,7 +248,8 @@ def main():
         start_t = time.time()
         # On ne peut transcrire que len(api_keys) fichiers
         if len(segments) > len(api_keys):
-            st.warning(f"Vous avez {len(segments)} fichiers et {len(api_keys)} clés. Seuls les {len(api_keys)} premiers seront traités.")
+            st.warning(f"Vous avez {len(segments)} fichiers et {len(api_keys)} clés API disponibles.\n"
+                       "Seuls les premiers fichiers auront une clé (un fichier par clé).")
         seg_to_process = segments[:len(api_keys)]
 
         for i, (audio_bytes, name) in enumerate(seg_to_process):
@@ -248,9 +266,12 @@ def main():
                 if abs(speed_factor - 1.0) > 1e-2:
                     seg = accelerate_ffmpeg(seg, speed_factor)
                 final_dur = len(seg)/1000.0
-                st.write(f"Durée finale : {human_time(final_dur)}")
+                st.write(f"**Durée finale :** {human_time(final_dur)}")
                 out_path = f"temp_out_{i}.wav"
                 seg.export(out_path, format="wav")
+                # Affichage de l'audio transformé
+                transformed_data = open(out_path, "rb").read()
+                st.audio(transformed_data, format="audio/wav")
             except Exception as e:
                 st.error(f"Erreur audio : {e}")
                 if os.path.exists(in_path):
@@ -268,7 +289,7 @@ def main():
             def run_nova():
                 txt, ok = transcribe_deepgram(out_path, key_api, "fr", "nova-2")
                 if ok:
-                    place_nova.success("Nova II OK")
+                    place_nova.success("Nova II terminée")
                     place_nova.text_area("Nova II", txt, height=150)
                     copy_to_clipboard(txt)
                     # Ajout dans hist
@@ -285,29 +306,30 @@ def main():
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                 else:
-                    place_nova.error("Échec Nova II")
+                    place_nova.error("Échec transcription Nova II")
 
             def run_whisper():
-                txt, ok = transcribe_deepgram(out_path, key_api, lang_choice, "whisper-large")
+                txt, ok = transcribe_deepgram(out_path, key_api, selected_lang, "whisper-large")
                 if ok:
-                    place_whisper.success("Whisper Large OK")
+                    place_whisper.success("Whisper Large terminée")
                     place_whisper.text_area("Whisper Large", txt, height=150)
                     copy_to_clipboard(txt)
                     # Mettre à jour hist
                     # On parcourt depuis la fin
                     for item in reversed(st.session_state["history"]):
-                        if item["audio_name"]==name and item["double_mode"]==True and not item["transcript_whisper"]:
+                        if item["audio_name"] == name and item["double_mode"] and not item["transcript_whisper"]:
                             item["transcript_whisper"] = txt
                             break
                 else:
-                    place_whisper.error("Échec Whisper Large")
+                    place_whisper.error("Échec transcription Whisper Large")
 
-            t_n = threading.Thread(target=run_nova)
-            t_w = threading.Thread(target=run_whisper)
-            t_n.start()
-            t_w.start()
-            t_n.join()
-            t_w.join()
+            # Lancer les transcriptions dans des threads
+            t_nova = threading.Thread(target=run_nova)
+            t_whisper = threading.Thread(target=run_whisper)
+            t_nova.start()
+            t_whisper.start()
+            t_nova.join()
+            t_whisper.join()
 
             # Nettoyage local
             if os.path.exists(in_path):
@@ -315,7 +337,9 @@ def main():
             if os.path.exists(out_path):
                 os.remove(out_path)
 
-        st.success(f"Transcriptions terminées en {human_time(time.time()-start_t)}.")
+        # Fin de toutes les transcriptions
+        elapsed = time.time() - start_t
+        st.success(f"Transcriptions terminées en {human_time(elapsed)}.")
 
 if __name__ == "__main__":
     main()
