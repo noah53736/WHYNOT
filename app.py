@@ -238,7 +238,6 @@ def main():
     if len(segments) > 0 and st.button("Transcrire Maintenant"):
         transcriptions = load_history()
         start_time = time.time()
-        used_keys = []  # Pour éviter de réutiliser la même clé simultanément
 
         for idx, (audio_bytes, rename) in enumerate(segments):
             st.write(f"### Segment #{idx+1}: {rename}")
