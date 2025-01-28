@@ -8,8 +8,8 @@ from datetime import datetime
 from pydub import AudioSegment
 import nova_api
 
-# Initialisation de l'historique dans le State de Streamlit
-def init_history():
+# Initialisation de l'historique et de l'index des clés API dans le State de Streamlit
+def init_state():
     if "history" not in st.session_state:
         st.session_state["history"] = []
     if "key_index" not in st.session_state:
@@ -64,11 +64,30 @@ def display_history(history):
     else:
         st.sidebar.info("Historique vide.")
 
+def get_api_keys():
+    # Récupérer les clés API DeepGram à partir des secrets
+    return [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
+
+def get_next_keys(api_keys, count=1):
+    # Rotation des clés API
+    key_count = len(api_keys)
+    if key_count == 0:
+        return []
+    if count > key_count:
+        st.error(f"Nombre de clés API insuffisant pour obtenir {count} clés distinctes.")
+        st.stop()
+    keys = []
+    for _ in range(count):
+        key = api_keys[st.session_state["key_index"]]
+        keys.append(key)
+        st.session_state["key_index"] = (st.session_state["key_index"] + 1) % key_count
+    return keys
+
 def main():
     st.set_page_config(page_title="N-B-L Audio", layout="wide")
     st.title("N-B-L Audio : Transcription Grand Public")
 
-    init_history()
+    init_state()
     history = st.session_state["history"]
 
     st.write("## Entrée Audio")
@@ -118,7 +137,7 @@ def main():
             st.info("Traitement en cours...")
             transcriptions = []
             total_cost = 0
-            api_keys = [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
+            api_keys = get_api_keys()
             key_count = len(api_keys)
             if key_count == 0:
                 st.error("Aucune clé API disponible. Veuillez vérifier vos secrets.")
@@ -151,14 +170,11 @@ def main():
 
                 # Sélection des clés API avec rotation
                 if accessibility:
-                    if st.session_state["key_index"] + 1 >= key_count:
-                        st.session_state["key_index"] = 0  # Reset si dépasse
-                    key1 = api_keys[st.session_state["key_index"]]
-                    key2 = api_keys[(st.session_state["key_index"] + 1) % key_count]
-                    st.session_state["key_index"] = (st.session_state["key_index"] + 2) % key_count
+                    keys = get_next_keys(api_keys, count=2)
+                    key1, key2 = keys
                 else:
-                    key = api_keys[st.session_state["key_index"]]
-                    st.session_state["key_index"] = (st.session_state["key_index"] + 1) % key_count
+                    keys = get_next_keys(api_keys, count=1)
+                    key = keys[0]
 
                 # Transcription des chunks
                 transcripts = []
@@ -171,7 +187,9 @@ def main():
                         if not trans1:
                             st.warning("Transcription Nova 2 échouée, segmentation et retranscription.")
                             # Segmentation et retranscription Nova 2 en 20 secondes
-                            nova_chunks = [seg[i*chunk_duration*1000:(i+1)*chunk_duration*1000] for i in range((len(seg) // (chunk_duration*1000)) + 1)]
+                            chunk_duration_nova = 20  # secondes
+                            nova_chunks = [seg[i*chunk_duration_nova*1000:(i+1)*chunk_duration_nova*1000] for i in range((len(seg) // (chunk_duration_nova*1000)) + 1)]
+                            trans1 = ""
                             for j, nova_chunk in enumerate(nova_chunks):
                                 temp_nova = f"temp_nova_{idx}_{j}.wav"
                                 nova_chunk.export(temp_nova, format="wav")
@@ -179,7 +197,7 @@ def main():
                                 if trans_retry:
                                     trans1 += " " + trans_retry
                                 os.remove(temp_nova)
-
+                        
                         # Transcription avec Whisper Large
                         trans2 = nova_api.transcribe_audio(chunk_file, key2, language_selection, "whisper-large")
                         transcripts.append({"Nova 2": trans1, "Whisper Large": trans2})
