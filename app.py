@@ -1,36 +1,35 @@
 import streamlit as st
-import requests
 import os
+import requests
 import time
 import threading
+import subprocess
 from datetime import datetime
 from pydub import AudioSegment, silence
-import subprocess
 
 # -----------------------------------------------------------
-#               CONFIGURATION ET CONSTANTES
+# CONFIGURATION ET CONSTANTES
 # -----------------------------------------------------------
 
 st.set_page_config(page_title="Double Transcription", layout="wide")
 
-# Vous pouvez ajuster au besoin
-COST_PER_SEC = 0.007  # Prix hypothétique
-MAX_FILES = 15        # Nombre max de fichiers
-MAX_SIZE_MB = 200     # Taille max d'un fichier
-SILENCE_LEN_MS = 700  # Pour remove_silences_classic
+MAX_FILES = 15         # Nombre max de fichiers upload
+MAX_SIZE_MB = 200      # Taille max (MB) par fichier
+COST_PER_SEC = 0.007   # Coût hypothétique par seconde
+SILENCE_LEN_MS = 700   # Paramètres pour remove_silences_classic
 SILENCE_THRESH_DB = -35
 KEEP_SIL_MS = 50
 
-# Dans ce script minimaliste, on stocke l'historique dans st.session_state
+# Historique en mémoire (pas de fichier credits.json)
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
 # -----------------------------------------------------------
-#         FONCTIONS UTILES (TRANSCRIPTION, ETC.)
+# FONCTIONS UTILES
 # -----------------------------------------------------------
 
 def human_time(sec: float) -> str:
-    """Formate un nombre de secondes en Xs, XmYs ou XhYmYs."""
+    """Formatte un nombre de secondes en 'Xs', 'YmZs' ou 'XhYmZs'."""
     sec = int(sec)
     if sec < 60:
         return f"{sec}s"
@@ -69,7 +68,6 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
     audio_seg.export(tmp_in, format="wav")
     remain = factor
     filters = []
-    # On procède par étapes pour éviter d'aller directement de 1.0 à 4.0
     while remain > 2.0:
         filters.append("atempo=2.0")
         remain /= 2.0
@@ -92,66 +90,8 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
             os.remove(tmp_out)
     return new_seg
 
-def transcribe_deepgram(file_path: str,
-                        api_key: str,
-                        language: str,
-                        model_name: str) -> (str, bool):
-    """
-    Envoie le fichier audio à DeepGram pour transcription (Nova II ou Whisper Large).
-    Retourne (transcription, success).
-    """
-    temp_in = "temp_audio_deepgram.wav"
-    try:
-        # Convertir en 16kHz WAV mono
-        audio = AudioSegment.from_file(file_path)
-        audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
-        audio_16k.export(temp_in, format="wav")
-
-        # Paramètres de la requête
-        params = {
-            "language": language,       # ex: "fr"
-            "model": model_name,        # "nova-2" ou "whisper-large"
-            "punctuate": "true",
-            "numerals": "true"
-        }
-        # Construction de l'URL
-        qs = "&".join([f"{k}={v}" for k, v in params.items()])
-        url = f"https://api.deepgram.com/v1/listen?{qs}"
-
-        headers = {
-            "Authorization": f"Token {api_key}",
-            "Content-Type": "audio/wav"
-        }
-
-        with open(temp_in, "rb") as f:
-            payload = f.read()
-
-        # Debug minimal
-        st.write(f"[DEBUG] Clé API utilisée (partielle) : {api_key[:4]}****")
-        st.write(f"[DEBUG] Modèle utilisé : {model_name}")
-
-        resp = requests.post(url, headers=headers, data=payload)
-        if resp.status_code == 200:
-            j = resp.json()
-            transcript = (
-                j.get("results", {})
-                 .get("channels", [{}])[0]
-                 .get("alternatives", [{}])[0]
-                 .get("transcript", "")
-            )
-            return transcript, True
-        else:
-            st.error(f"[DeepGram] Erreur {resp.status_code} : {resp.text}")
-            return "", False
-    except Exception as e:
-        st.error(f"[DeepGram] Exception : {e}")
-        return "", False
-    finally:
-        if os.path.exists(temp_in):
-            os.remove(temp_in)
-
 def copy_to_clipboard(text):
-    """Petit bouton pour copier la transcription."""
+    """Petit bouton HTML/JS pour copier un texte donné."""
     script_html = f"""
     <script>
         function copyText(txt) {{
@@ -166,124 +106,172 @@ def copy_to_clipboard(text):
     """
     st.components.v1.html(script_html)
 
+def transcribe_deepgram(file_path: str,
+                        api_key: str,
+                        language: str,
+                        model_name: str) -> (str, bool):
+    """
+    Envoie le fichier audio à DeepGram pour transcription (Nova II ou Whisper Large).
+    Retourne (transcript, success).
+    """
+    temp_in = "temp_audio_deepgram.wav"
+    try:
+        # Convertir en 16kHz WAV mono
+        audio = AudioSegment.from_file(file_path)
+        audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio_16k.export(temp_in, format="wav")
+
+        # Params de la requête
+        params = {
+            "language": language,
+            "model": model_name,
+            "punctuate": "true",
+            "numerals": "true"
+        }
+        qs = "&".join([f"{k}={v}" for k, v in params.items()])
+        url = f"https://api.deepgram.com/v1/listen?{qs}"
+        headers = {
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "audio/wav"
+        }
+
+        with open(temp_in, "rb") as f:
+            payload = f.read()
+
+        # Debug minimal
+        st.write(f"[DEBUG] Clé API partielle : {api_key[:4]}****")
+        st.write(f"[DEBUG] Modèle : {model_name}")
+
+        resp = requests.post(url, headers=headers, data=payload)
+        if resp.status_code == 200:
+            j = resp.json()
+            transcript = (
+                j.get("results", {})
+                 .get("channels", [{}])[0]
+                 .get("alternatives", [{}])[0]
+                 .get("transcript", "")
+            )
+            return transcript, True
+        else:
+            st.error(f"[DeepGram] Erreur {resp.status_code} : {resp.text}")
+            return "", False
+
+    except Exception as e:
+        st.error(f"[DeepGram] Exception : {e}")
+        return "", False
+    finally:
+        if os.path.exists(temp_in):
+            os.remove(temp_in)
+
+
 # -----------------------------------------------------------
-#         INTERFACE PRINCIPALE STREAMLIT
+# APPLICATION STREAMLIT (UN SEUL SCRIPT)
 # -----------------------------------------------------------
 
 def main():
-    st.title("Application Minimaliste : Double Transcription (Nova II + Whisper Large)")
+    st.title("Application Minimaliste : Nova II + Whisper Large")
     st.write("""
     Téléchargez un ou plusieurs fichiers audio (jusqu'à 15).  
-    Pour chaque fichier, on utilise **une clé API distincte** (si possible) pour éviter de dépasser les quotas.  
-    Puis on fait **2 transcriptions** : Nova II et Whisper Large.
+    Pour **chaque** fichier, on utilise **une clé API** (si dispo)  
+    et on fait **2 transcriptions** : Nova II et Whisper Large.
     """)
 
-    # Historique en mémoire
+    # Affichage de l'historique
     with st.sidebar:
         st.header("Historique")
-        if not st.session_state["history"]:
+        hist = st.session_state["history"]
+        if not hist:
             st.info("Aucune transcription enregistrée.")
         else:
-            st.write(f"Total: {len(st.session_state['history'])} transcriptions.")
-            for item in reversed(st.session_state["history"][:15]):
+            st.write(f"Total: {len(hist)} transcriptions.")
+            for item in reversed(hist[:20]):
                 st.markdown(f"- **{item['audio_name']}** / {item['date']}")
 
-    # Paramètres latéraux
     st.sidebar.write("---")
-    st.sidebar.header("Options de Transcription")
+    st.sidebar.header("Options")
 
-    # Langue (pour Whisper Large)
     lang_choice = st.sidebar.radio(
-        "Langue (Whisper Large) :",
-        ["fr", "en", "es", "de", "it", "pt", "ja", "ko", "zh"],
+        "Langue pour Whisper Large :",
+        ["fr","en","es","de","it","pt","ja","ko","zh"],
         index=0
     )
-    remove_sil = st.sidebar.checkbox("Supprimer les silences", value=False)
+    remove_sil = st.sidebar.checkbox("Supprimer les silences ?", value=False)
     speed_factor = st.sidebar.slider("Accélération Audio", 0.5, 4.0, 1.0, 0.1)
 
-    # Chargement de clés API
-    st.sidebar.write("---")
-    st.sidebar.header("Clés API")
+    st.sidebar.header("Clés API DeepGram")
+    # On charge toutes les clés OVA1..OVA15 dans st.secrets
     api_keys = []
-    for i in range(1, 16):
-        key_name = f"OVA{i}"
-        try:
-            key_val = st.secrets[key_name]
-            api_keys.append(key_val)
-        except KeyError:
-            pass
+    for i in range(1,16):
+        k_name = f"OVA{i}"
+        if k_name in st.secrets:
+            api_keys.append(st.secrets[k_name])
     if not api_keys:
-        st.sidebar.error("Aucune clé trouvée dans st.secrets. Ajoutez OVA1..OVA15.")
+        st.sidebar.error("Pas de clés API (OVA1..OVA15) trouvées dans secrets.")
         st.stop()
+    st.sidebar.write(f"{len(api_keys)} clés trouvées.")
 
-    st.sidebar.write(f"**{len(api_keys)} clés disponibles**")
-
-    # Upload multiple files
-    st.write("## Import de fichiers audio")
-    upf = st.file_uploader("Sélectionnez jusqu'à 15 fichiers audio :", 
-                           type=["mp3","wav","m4a","ogg","webm"], 
+    # Upload
+    st.write("## Fichiers Audio")
+    upf = st.file_uploader("Importer jusqu'à 15 fichiers audio :",
+                           type=["mp3","wav","m4a","ogg","webm"],
                            accept_multiple_files=True)
-
-    # On collecte les segments
     segments = []
     if upf:
         if len(upf) > MAX_FILES:
-            st.warning(f"Vous avez importé plus de {MAX_FILES} fichiers. On va ignorer les supplémentaires.")
-        for idx, fobj in enumerate(upf[:MAX_FILES]):
+            st.warning(f"Plus de {MAX_FILES} fichiers. On ne garde que les {MAX_FILES} premiers.")
+        for fobj in upf[:MAX_FILES]:
             if fobj.size > MAX_SIZE_MB * 1024 * 1024:
-                st.warning(f"Le fichier {fobj.name} dépasse {MAX_SIZE_MB} MB. Ignoré.")
+                st.warning(f"{fobj.name} dépasse {MAX_SIZE_MB} MB, ignoré.")
                 continue
-            audio_data = fobj.read()
-            st.audio(audio_data, format=fobj.type)
-            segments.append((audio_data, fobj.name))
+            data = fobj.read()
+            segments.append((data, fobj.name))
+            st.audio(data, format=fobj.type)
 
-    # Bouton de transcription
     if segments and st.button("Transcrire Maintenant"):
-        # On va boucler sur les segments
-        start_time = time.time()
+        start_t = time.time()
+        # On ne peut transcrire que len(api_keys) fichiers
+        if len(segments) > len(api_keys):
+            st.warning(f"Vous avez {len(segments)} fichiers et {len(api_keys)} clés. Seuls les {len(api_keys)} premiers seront traités.")
+        seg_to_process = segments[:len(api_keys)]
 
-        # On limite si on n'a pas assez de clés
-        files_to_process = segments[:len(api_keys)]
-        if len(segments) > len(api_keys]:
-            st.warning(f"Vous avez {len(segments)} fichiers mais seulement {len(api_keys)} clés API disponibles.\n"
-                       "Seuls les premiers fichiers auront une clé (un fichier par clé).")
-
-        for i, (audio_bytes, name) in enumerate(files_to_process):
-            st.write(f"### Fichier #{i+1} : {name}")
-            local_in = f"input_{i}.wav"
-            with open(local_in, "wb") as w:
+        for i, (audio_bytes, name) in enumerate(seg_to_process):
+            st.write(f"### Fichier #{i+1}: {name}")
+            # Sauvegarde locale
+            in_path = f"temp_in_{i}.wav"
+            with open(in_path, "wb") as w:
                 w.write(audio_bytes)
-            # Transformations audio
             try:
-                seg = AudioSegment.from_file(local_in)
-                orig_dur = len(seg) / 1000.0
+                seg = AudioSegment.from_file(in_path)
+                orig_dur = len(seg)/1000.0
                 if remove_sil:
                     seg = remove_silences_classic(seg)
                 if abs(speed_factor - 1.0) > 1e-2:
                     seg = accelerate_ffmpeg(seg, speed_factor)
-                final_dur = len(seg) / 1000.0
-                st.write(f"**Durée finale :** {human_time(final_dur)}")
-                local_out = f"transformed_{i}.wav"
-                seg.export(local_out, format="wav")
+                final_dur = len(seg)/1000.0
+                st.write(f"Durée finale : {human_time(final_dur)}")
+                out_path = f"temp_out_{i}.wav"
+                seg.export(out_path, format="wav")
             except Exception as e:
-                st.error(f"Erreur lecture/transformations : {e}")
-                if os.path.exists(local_in):
-                    os.remove(local_in)
+                st.error(f"Erreur audio : {e}")
+                if os.path.exists(in_path):
+                    os.remove(in_path)
                 continue
 
-            # Récupère la clé pour ce fichier
-            key_api = api_keys[i]  
-            placeholder_nova = st.empty()
-            placeholder_whisper = st.empty()
+            # Récupère la clé API pour ce fichier
+            key_api = api_keys[i]
 
-            # Fonctions de transcription
+            # Placeholders
+            place_nova = st.empty()
+            place_whisper = st.empty()
+
+            # Fonctions
             def run_nova():
-                txt, ok = transcribe_deepgram(local_out, key_api, "fr", "nova-2")
+                txt, ok = transcribe_deepgram(out_path, key_api, "fr", "nova-2")
                 if ok:
-                    placeholder_nova.success("Nova II terminée")
-                    placeholder_nova.text_area("Nova II", txt, height=150)
+                    place_nova.success("Nova II OK")
+                    place_nova.text_area("Nova II", txt, height=150)
                     copy_to_clipboard(txt)
-                    # Historique
+                    # Ajout dans hist
                     st.session_state["history"].append({
                         "audio_name": name,
                         "double_mode": True,
@@ -292,48 +280,42 @@ def main():
                         "model_whisper": "whisper-large",
                         "transcript_whisper": "",
                         "duration": human_time(orig_dur),
-                        "cost_estimate": f"${final_dur * COST_PER_SEC * 2:.2f}",
+                        "elapsed_time": human_time(time.time()-start_t),
+                        "cost_estimate": f"${final_dur*COST_PER_SEC*2:.2f}",
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                 else:
-                    placeholder_nova.error("Échec transcription Nova II")
+                    place_nova.error("Échec Nova II")
 
             def run_whisper():
-                txt, ok = transcribe_deepgram(local_out, key_api, lang_choice, "whisper-large")
+                txt, ok = transcribe_deepgram(out_path, key_api, lang_choice, "whisper-large")
                 if ok:
-                    placeholder_whisper.success("Whisper Large terminée")
-                    placeholder_whisper.text_area("Whisper Large", txt, height=150)
+                    place_whisper.success("Whisper Large OK")
+                    place_whisper.text_area("Whisper Large", txt, height=150)
                     copy_to_clipboard(txt)
-                    # Mise à jour historique (on met la transcription whisper sur la même entrée)
+                    # Mettre à jour hist
                     # On parcourt depuis la fin
                     for item in reversed(st.session_state["history"]):
-                        if item.get("audio_name","") == name and item.get("double_mode"):
-                            if not item.get("transcript_whisper"):
-                                item["transcript_whisper"] = txt
-                                break
+                        if item["audio_name"]==name and item["double_mode"]==True and not item["transcript_whisper"]:
+                            item["transcript_whisper"] = txt
+                            break
                 else:
-                    placeholder_whisper.error("Échec transcription Whisper Large")
+                    place_whisper.error("Échec Whisper Large")
 
-            # Lancement multi-threads
-            t_nova = threading.Thread(target=run_nova)
-            t_whis = threading.Thread(target=run_whisper)
-            t_nova.start()
-            t_whis.start()
-            t_nova.join()
-            t_whis.join()
+            t_n = threading.Thread(target=run_nova)
+            t_w = threading.Thread(target=run_whisper)
+            t_n.start()
+            t_w.start()
+            t_n.join()
+            t_w.join()
 
-            # Nettoyage
-            if os.path.exists(local_in):
-                os.remove(local_in)
-            if os.path.exists(local_out):
-                os.remove(local_out)
+            # Nettoyage local
+            if os.path.exists(in_path):
+                os.remove(in_path)
+            if os.path.exists(out_path):
+                os.remove(out_path)
 
-        # Fin de toutes les transcriptions
-        elapsed = time.time() - start_time
-        st.success(f"Transcriptions terminées en {human_time(elapsed)}.")
-
-def run_app():
-    main()
+        st.success(f"Transcriptions terminées en {human_time(time.time()-start_t)}.")
 
 if __name__ == "__main__":
-    run_app()
+    main()
