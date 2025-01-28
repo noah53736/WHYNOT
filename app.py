@@ -68,13 +68,17 @@ def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
     filters.append(f"atempo={remain}")
     f_str = ",".join(filters)
     cmd = ["ffmpeg", "-y", "-i", tmp_in, "-filter:a", f_str, tmp_out]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    new_seg = AudioSegment.from_file(tmp_out, format="wav")
     try:
-        os.remove(tmp_in)
-        os.remove(tmp_out)
-    except:
-        pass
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        new_seg = AudioSegment.from_file(tmp_out, format="wav")
+    except Exception as e:
+        st.error(f"Erreur lors de l'accélération audio : {e}")
+        new_seg = audio_seg
+    finally:
+        if os.path.exists(tmp_in):
+            os.remove(tmp_in)
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
     return new_seg
 
 def remove_silences_classic(audio_seg: AudioSegment,
@@ -134,6 +138,12 @@ def get_available_api_keys():
         except KeyError:
             st.sidebar.error(f"Clé API manquante : {key_name}")
     return api_keys
+
+def reset_app():
+    if st.button("Recommencer à zéro"):
+        st.session_state["history"] = []
+        save_history([])
+        st.experimental_rerun()
 
 def main():
     init_history()
@@ -409,18 +419,6 @@ def main():
         elapsed_time = time.time() - start_time
         st.success(f"Toutes les transcriptions sont terminées en {human_time(elapsed_time)}.")
 
-        # Rafraîchir la page pour mettre à jour l'historique
-        st.experimental_rerun()
-
-    def reset_app():
-        if st.button("Recommencer à zéro"):
-            st.session_state["history"] = []
-            save_history([])
-            st.experimental_rerun()
-
-    def main_wrapper():
+    if __name__ == "__main__":
         main()
         reset_app()
-
-    if __name__ == "__main__":
-        main_wrapper()
