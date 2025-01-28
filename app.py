@@ -98,8 +98,8 @@ def main():
 
     st.write("---")
     st.write("## Entrée Audio")
-    audio_data = None
-    file_name = None
+    audio_data = []
+    file_names = []
 
     input_type = st.radio("Type d'Entrée :", ["Fichier (Upload)", "Micro (Enregistrement)"])
     if input_type=="Fichier (Upload)":
@@ -108,30 +108,21 @@ def main():
             if any(file.size > 300*1024*1024 for file in upf):
                 st.warning("Un ou plusieurs fichiers dépassent 300MB.")
             else:
-                audio_data = [file.read() for file in upf]
                 for file in upf:
+                    audio_data.append(file.read())
+                    file_names.append(file.name)
                     st.audio(file, format=file.type)
-                file_name = st.text_input("Nom du(s) Fichier(s) (Optionnel)")
     else:
         mic_input = st.audio_input("Micro")
         if mic_input:
-            audio_data = [mic_input.read()]
+            audio_data.append(mic_input.read())
+            file_names.append("Microphone")
             st.audio(mic_input, format=mic_input.type)
-            file_name = st.text_input("Nom du Fichier (Optionnel)")
 
-    cA, cB = st.columns(2)
-    with cA:
-        if st.button("Effacer l'Entrée"):
-            audio_data = None
-            st.experimental_rerun()
-    with cB:
-        if st.button("Vider l'Historique"):
-            st.session_state["history"] = []
-            st.sidebar.success("Historique vidé.")
-
-    if audio_data:
+    # Bouton pour lancer la transcription
+    if st.button("Transcrire") and audio_data:
         try:
-            # Gestion des fichiers multiples et segmentation si nécessaire
+            st.info("Traitement en cours...")
             transcriptions = []
             total_cost = 0
             api_keys = [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
@@ -140,13 +131,15 @@ def main():
             for idx, data in enumerate(audio_data):
                 seg = AudioSegment.from_file(io.BytesIO(data))
                 orig_sec = len(seg)/1000.0
-                st.write(f"**Fichier {idx+1}** - Durée Originale : {human_time(orig_sec)}")
+                st.write(f"**Fichier {idx+1} : {file_names[idx]}** - Durée Originale : {human_time(orig_sec)}")
 
                 # Segmentation intelligente si le fichier > 20MB (~20MB en WAV est approximativement 20MB, ajuster si nécessaire)
                 if len(data) > 20*1024*1024:
                     st.info("Fichier trop volumineux, segmentation en morceaux de 20MB.")
-                    # Note: Une segmentation plus précise peut être nécessaire
-                    chunks = [seg[i:i+20*1024*1024] for i in range(0, len(seg), 20*1024*1024)]
+                    # Approximation : durée en secondes pour 20MB
+                    # Cela dépend du bitrate, ici on suppose 1 MB ~ 1 seconde
+                    chunk_duration = 20  # secondes
+                    chunks = [seg[i*chunk_duration*1000:(i+1)*chunk_duration*1000] for i in range((len(seg) // (chunk_duration*1000)) + 1)]
                 else:
                     chunks = [seg]
 
@@ -203,8 +196,8 @@ def main():
                 total_cost += sum(costs)
 
             # Affichage des résultats
-            if accessibility:
-                for idx, trans in enumerate(transcriptions):
+            for idx, trans in enumerate(transcriptions):
+                if accessibility:
                     st.success(f"Double transcription du Fichier {idx+1} terminée.")
                     cL, cR = st.columns(2)
                     with cL:
@@ -216,8 +209,8 @@ def main():
                         st.text_area(f"Texte Whisper Large - Fichier {idx+1}", trans["Whisper Large"], height=180)
                         copy_to_clipboard(trans["Whisper Large"])
 
-                    alias1 = generate_alias(6) if not file_name else f"{file_name}_Nova2_{idx+1}"
-                    alias2 = generate_alias(6) if not file_name else f"{file_name}_Whisper_{idx+1}"
+                    alias1 = generate_alias(6) if not file_names[idx] else f"{file_names[idx]}_Nova2_{idx+1}"
+                    alias2 = generate_alias(6) if not file_names[idx] else f"{file_names[idx]}_Whisper_{idx+1}"
                     entry1 = {
                         "Alias/Nom": alias1,
                         "Méthode": "Nova 2",
@@ -241,17 +234,15 @@ def main():
                         "Audio Binaire": data.hex()
                     }
                     st.session_state["history"].extend([entry1, entry2])
-            else:
-                for idx, trans in enumerate(transcriptions):
-                    model = chosen_model.capitalize()
+                else:
                     st.success(f"Transcription du Fichier {idx+1} terminée.")
                     st.text_area(f"Texte Transcrit - Fichier {idx+1}", list(trans.values())[0], height=180)
                     copy_to_clipboard(list(trans.values())[0])
 
-                    alias = generate_alias(6) if not file_name else f"{file_name}_{model}_{idx+1}"
+                    alias = generate_alias(6) if not file_names[idx] else f"{file_names[idx]}_{chosen_model}_{idx+1}"
                     entry = {
                         "Alias/Nom": alias,
-                        "Méthode": model,
+                        "Méthode": chosen_model.capitalize(),
                         "Modèle": chosen_model,
                         "Durée": human_time(orig_sec),
                         "Temps": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -267,7 +258,14 @@ def main():
         except Exception as e:
             st.error(f"Erreur lors de la transcription : {e}")
 
+    # Affichage de l'historique et de l'aperçu audio
     display_history(st.session_state["history"])
+
+    # Affichage des aperçus audio sous l'historique
+    st.write("---")
+    st.write("### Aperçu Audio")
+    for en in st.session_state["history"]:
+        st.audio(bytes.fromhex(en["Audio Binaire"]), format="audio/wav")
 
 if __name__=="__main__":
     main()
