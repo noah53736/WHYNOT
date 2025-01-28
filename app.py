@@ -27,7 +27,7 @@ SILENCE_LEN_MS = 700   # Paramètres pour remove_silences_classic
 SILENCE_THRESH_DB = -35
 KEEP_SIL_MS = 50
 
-# Historique en mémoire (pas de fichier credits.json)
+# Historique en mémoire
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
