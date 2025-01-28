@@ -1,4 +1,5 @@
 # nova_api.py
+
 import os
 import requests
 import streamlit as st
@@ -14,12 +15,13 @@ def transcribe_audio(
     numerals: bool = True
 ) -> str:
     """
-    Transcrit un WAV 'file_path' via l'API DeepGram (dg_api_key).
-    Une seule requête, pas de segmentation interne ici.
+    Transcrit un fichier 'file_path' (WAV) via DeepGram (one-shot).
+    Pas de segmentation dans cette fonction.
     """
     temp_in = "temp_audio_tmp.wav"
     try:
         audio = AudioSegment.from_file(file_path)
+        # On se limite à un resampling 16k => optimum
         audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio_16k.export(temp_in, format="wav")
 
