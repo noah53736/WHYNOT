@@ -9,6 +9,7 @@ from datetime import datetime
 from pydub import AudioSegment
 import nova_api
 import time
+import traceback
 
 #########################
 #   CONFIG PAGE UNIQUE  #
@@ -19,11 +20,6 @@ st.set_page_config(page_title="NBL Audio", layout="wide")
 #   INITIALISATIONS     #
 #########################
 def init_state():
-    if "history" not in st.session_state:
-        st.session_state["history"] = []
-    # Historique "whisper-only"
-    if "whisper_history" not in st.session_state:
-        st.session_state["whisper_history"] = []
     if "dg_key_index" not in st.session_state:
         st.session_state["dg_key_index"] = 0
     if "pwd_attempts" not in st.session_state:
@@ -34,14 +30,9 @@ def init_state():
         st.session_state["blocked"] = False
 
 def get_dg_keys():
-    """Récupère les clés API DeepGram (NOVA...)."""
     return [st.secrets[k] for k in st.secrets if k.startswith("NOVA")]
 
 def pick_key(keys):
-    """
-    On prend la clé courante, 
-    si on dépasse => retour index 0.
-    """
     if not keys:
         return None
     idx = st.session_state["dg_key_index"]
@@ -65,32 +56,30 @@ def human_time(sec: float) -> str:
         m, s = divmod(r, 60)
         return f"{h}h{m}m{s}s"
 
-def copy_to_clipboard(text):
-    # Agrandir un peu le bouton, et pointer sur la div correspondante
+def copy_button_js(text):
+    # Bouton plus grand, message confirmation
+    # ID unique ?
+    uid = generate_alias(6)
     script_html = f"""
     <script>
-        function copyText() {{
+        function copyText_{uid}() {{
             navigator.clipboard.writeText(`{text}`).then(function() {{
-                alert('Texte Whisper/Transcrit copié dans le presse-papiers!');
+                alert('Texte copié dans le presse-papiers!');
             }}, function(err) {{
                 alert('Échec de la copie : ' + err);
             }});
         }}
     </script>
-    <button onclick="copyText()" style="margin:5px; font-size:16px; padding:6px;">COPIER</button>
+    <button onclick="copyText_{uid}()" style="font-size:16px; padding:5px; margin:5px;">COPIER</button>
     """
     st.components.v1.html(script_html)
 
-#########################
-#      MOT DE PASSE     #
-#########################
 def password_gate():
     st.title("Accès Protégé (Mot de Passe)")
-    st.info("Veuillez saisir le code à 4 chiffres.")
-    code_in = st.text_input("Code:", value="", max_chars=4, type="password", key="pwd_in")
-    if st.button("Valider", key="pwd_valider"):
+    code_in = st.text_input("Code 4 chiffres:", value="", max_chars=4, type="password")
+    if st.button("Valider"):
         if st.session_state.get("blocked", False):
-            st.warning("Vous êtes bloqué.")
+            st.warning("Vous êtes déjà bloqué.")
             st.stop()
         if st.session_state.get("pwd_attempts", 0) >= 4:
             st.error("Trop de tentatives. Session bloquée.")
@@ -98,258 +87,199 @@ def password_gate():
             st.stop()
 
         real_pwd = st.secrets.get("APP_PWD","1234")
-        if code_in == real_pwd:
+        if code_in==real_pwd:
             st.session_state["authorized"] = True
             st.success("Accès autorisé.")
         else:
-            st.session_state["pwd_attempts"] += 1
-            attempts = st.session_state["pwd_attempts"]
-            st.error(f"Mot de passe invalide. (Tentative {attempts}/4)")
+            st.session_state["pwd_attempts"] = st.session_state.get("pwd_attempts",0)+1
+            st.error(f"Mot de passe erroné. Tentative {st.session_state['pwd_attempts']}/4.")
 
-###############################
-#  AFFICHAGE HISTO WHISPER    #
-###############################
-def display_whisper_history():
-    st.sidebar.write("---")
-    st.sidebar.header("Historique Whisper Only")
-    if st.session_state["whisper_history"]:
-        table = []
-        for wh in st.session_state["whisper_history"]:
-            table.append({
-                "Nom": wh["Alias/Nom"],
-                "Durée": wh["Durée"],
-                "Temps": wh["Temps"]
-            })
-        st.sidebar.table(table[::-1])
-        if st.sidebar.button("Vider Historique Whisper", key="clear_whisp"):
-            st.session_state["whisper_history"].clear()
-            st.experimental_rerun()
-    else:
-        st.sidebar.info("Aucun historique Whisper.")
-
-#########################
-#   SEGMENTATION 25MB   #
-#########################
 def segment_if_needed(raw_data: bytes, threshold=25*1024*1024):
-    """
-    Découpe en blocs de 25MB si c'est plus grand,
-    UNIQUEMENT pour Whisper Large usage.
-    """
     if len(raw_data) <= threshold:
         return [AudioSegment.from_file(io.BytesIO(raw_data))]
-    st.info("Fichier volumineux => segmentation par blocs de 25MB (Whisper Large).")
-    full_seg = AudioSegment.from_file(io.BytesIO(raw_data))
+    st.info("Fichier volumineux => segmentation 25MB (Whisper).")
+    seg_full = AudioSegment.from_file(io.BytesIO(raw_data))
     segments = []
-    length_ms = len(full_seg)
-    # proportionnel
-    step_ms = int(length_ms*(threshold/len(raw_data)))
+    length_ms = len(seg_full)
+    step_ms = int(length_ms*(threshold/len(raw_data))) # proportionnel
     start = 0
-    while start < length_ms:
+    while start<length_ms:
         end = min(start+step_ms, length_ms)
-        segments.append(full_seg[start:end])
-        start = end
+        segments.append(seg_full[start:end])
+        start=end
     return segments
 
-#########################
-#    APP PRINCIPALE     #
-#########################
-def app_main():
-    display_whisper_history()
-
+def main_app():
     st.title("NBL Audio")
-
     st.markdown("""
-**Informations sur les IA :**
-- **Nova 2** : IA rapide, résultat en quelques secondes.  
-- **Whisper Large** : IA plus lente (2-5 min pour des audios de 1h30), très précise (~99%).  
-**Ne quittez pas cette page Web** pendant la transcription, surtout pour de gros fichiers.
-    """)
+**Nova 2** : IA rapide  
+**Whisper Large** : IA plus lente (2-5 minutes pour 1h30), plus précise (~99%).  
+_Ne quittez pas cette page_ durant le processus.
+""")
 
-    src_type = st.radio("Source Audio", ["Fichier (Upload)", "Micro (Enregistrement)"], index=1)
-    audio_data_list = []
+    # Micro par défaut => index=1
+    src = st.radio("Source Audio", ["Fichier (Upload)", "Micro (Enregistrement)"], index=1)
+    audio_data = []
     file_names = []
 
-    if src_type=="Fichier (Upload)":
-        upfs = st.file_uploader(
-            "Importer vos fichiers audio (jusqu'à plusieurs fichiers)",
+    if src=="Fichier (Upload)":
+        upf = st.file_uploader("Fichiers audio multiples possible", 
             type=["mp3","wav","m4a","ogg","webm"],
             accept_multiple_files=True
         )
-        if upfs:
-            for f in upfs:
-                audio_data_list.append(f.read())
+        if upf:
+            for f in upf:
+                audio_data.append(f.read())
                 file_names.append(f.name)
                 st.audio(f, format=f.type)
     else:
-        nb = st.number_input("Nombre de micros", 1,4,1)
+        nb = st.number_input("Nb micros", 1,4,1)
         for i in range(nb):
-            mic_inp = st.audio_input(f"Micro {i+1}")
-            if mic_inp:
-                audio_data_list.append(mic_inp.read())
+            mic_in = st.audio_input(f"Micro {i+1}")
+            if mic_in:
+                audio_data.append(mic_in.read())
                 file_names.append(f"Micro_{i+1}")
-                st.audio(mic_inp, format=mic_inp.type)
+                st.audio(mic_in, format=mic_in.type)
 
     st.write("---")
-    st.subheader("Choix de Transcription")
-    st.markdown("""
-Double Transcription (activée par défaut) :  
-- Lance d'abord Nova 2 (résultat rapide)  
-- Puis **Whisper Large** (l'IA la plus précise, patience nécessaire).
-    """)
-    double_trans = st.checkbox("Double Transcription (Nova2 -> Whisper)", value=True)
+    st.subheader("Double Transcription (Activée par défaut) : Nova2 → Whisper")
+    double_trans = st.checkbox("Double Transcription", value=True)
 
-    colA, colB = st.columns([1,1])
-    with colA:
-        single_model = st.selectbox("Modèle (si double non coché)", ["Nova 2","Whisper Large"])
-    with colB:
+    col1, col2 = st.columns([1,1])
+    with col1:
+        model_main = st.selectbox("Modèle unique (si non double)", ["Nova 2","Whisper Large"])
+    with col2:
         lang_main = "fr"
-        if single_model=="Whisper Large":
-            lang_main = st.selectbox("Langue (Whisper)", ["fr","en"])
+        if model_main=="Whisper Large":
+            lang_main = st.selectbox("Langue (Whisper)?", ["fr","en"])
 
-    if st.button("Transcrire") and audio_data_list:
-        st.info("Début de la transcription... Merci de patienter.")
+    if st.button("Transcrire") and audio_data:
+        st.info("Démarrage de la transcription, patientez s'il vous plaît...")
         keys = get_dg_keys()
         if not keys:
-            st.error("Aucune clé DeepGram configurée.")
-            st.stop()
+            st.error("Aucune clé DeepGram disponible.")
+            return
 
-        for idx, raw in enumerate(audio_data_list):
-            seg = AudioSegment.from_file(io.BytesIO(raw))
-            dur_s = len(seg)/1000.0
-            f_name = file_names[idx] if idx<len(file_names) else f"Fichier_{idx+1}"
-            st.write(f"### Fichier {idx+1}: {f_name} (Durée: {human_time(dur_s)})")
+        for idx, raw in enumerate(audio_data):
+            segA = AudioSegment.from_file(io.BytesIO(raw))
+            dur_s = len(segA)/1000.0
+            name_ = file_names[idx] if idx<len(file_names) else f"F_{idx+1}"
 
-            temp_main = f"temp_main_{idx}.wav"
-            seg.export(temp_main, format="wav")
+            st.write(f"### Fichier {idx+1}: {name_} (Durée {human_time(dur_s)})")
+
+            # On export en un bloc
+            tmpA = f"temp_main_{idx}.wav"
+            segA.export(tmpA, format="wav")
 
             if double_trans:
                 # 1) Nova 2
-                st.write(f"**{f_name} => Nova 2** (rapide)")
+                st.info(f"Transcription Nova 2 (rapide) pour '{name_}'...")
                 start_nova = time.time()
-                k_nova = pick_key(keys)
-                txt_nova = nova_api.transcribe_audio(temp_main, k_nova, "fr", "nova-2")
+                kN = pick_key(keys)
+                txt_nova = nova_api.transcribe_audio(tmpA, kN, "fr", "nova-2")
                 end_nova = time.time()
-                st.success(f"Nova 2 terminé pour '{f_name}'. Résultat ci-dessous. Lancement Whisper Large...")
+                st.success(f"Nova 2 terminé pour '{name_}'. Résultat ci-dessous.")
+                # On l'affiche direct
+                cL, cR = st.columns(2)
+                with cL:
+                    st.subheader(f"NOVA 2 - {name_}")
+                    st.text_area(f"Nova_{idx}", txt_nova, height=130)
+                    copy_button_js(txt_nova)
 
-                # 2) Whisper Large
-                st.info("Veuillez patienter pour Whisper Large (IA plus lente, très précise).")
-                # Si >25MB => segmentation
-                do_seg = (os.path.getsize(temp_main)>25*1024*1024)
+                # 2) Whisper
+                st.info(f"Début Whisper Large (plus précise) pour '{name_}'.")
+                # seg si >25MB
+                do_seg = (len(raw)>25*1024*1024)
+                final_whisp = ""
+                whisp_box = cR.empty()  # un conteneur
+                start_whisp = time.time()
+
                 if do_seg:
-                    st.info("Fichier >25MB => segmentation en blocs (Whisper).")
-                    rawsize = os.path.getsize(temp_main)
-                    segm = segment_if_needed(raw, threshold=25*1024*1024)
-                    # export segments
-                    cfiles = []
-                    for si, s_sub in enumerate(segm):
-                        wout = f"whisp_seg_{idx}_{si}.wav"
-                        s_sub.export(wout, format="wav")
-                        cfiles.append(wout)
-                    start_whisp = time.time()
-                    txtw_list=[]
-                    for cf in cfiles:
-                        k_whisp = pick_key(keys)
-                        tw = nova_api.transcribe_audio(cf, k_whisp, lang_main, "whisper-large")
-                        txtw_list.append(tw)
-                    end_whisp = time.time()
-                    for cf2 in cfiles:
-                        os.remove(cf2)
-                    txt_whisp = " ".join(txtw_list)
+                    # seg
+                    st.info("Fichier >25MB => segmentation.")
+                    segs = segment_if_needed(raw, threshold=25*1024*1024)
+                    partial = []
+                    for s_i, ssub in enumerate(segs):
+                        wavX = f"temp_whisp_{idx}_{s_i}.wav"
+                        ssub.export(wavX, format="wav")
+                        kW = pick_key(keys)
+                        # On transcrit => on concat
+                        piece = nova_api.transcribe_audio(wavX, kW, lang_main, "whisper-large")
+                        partial.append(piece)
+                        final_whisp = " ".join(partial)  
+                        # On met à jour l'affichage en direct
+                        with cR:
+                            st.subheader(f"WHISPER LARGE - {name_}")
+                            st.text_area(
+                                f"whispPartial_{idx}",
+                                final_whisp,
+                                height=130
+                            )
+                            copy_button_js(final_whisp)
+                        os.remove(wavX)
                 else:
-                    start_whisp = time.time()
-                    k_whisp = pick_key(keys)
-                    txt_whisp = nova_api.transcribe_audio(temp_main, k_whisp, lang_main, "whisper-large")
-                    end_whisp = time.time()
+                    # one shot
+                    kW2 = pick_key(keys)
+                    partial_txt = nova_api.transcribe_audio(tmpA, kW2, lang_main, "whisper-large")
+                    final_whisp = partial_txt
+                    with cR:
+                        st.subheader(f"WHISPER LARGE - {name_}")
+                        st.text_area(
+                            f"whispPartial_{idx}",
+                            final_whisp,
+                            height=130
+                        )
+                        copy_button_js(final_whisp)
 
-                cA, cB = st.columns(2)
-                with cA:
-                    st.subheader(f"NOVA 2 - {f_name}")
-                    st.text_area(
-                        f"Nova2_{idx}",
-                        txt_nova,
-                        height=130
-                    )
-                    copy_to_clipboard(txt_nova)
-                    st.write(f"Temps Nova2: {end_nova - start_nova:.1f}s")
-
-                with cB:
-                    st.subheader(f"WHISPER LARGE - {f_name}")
-                    st.text_area(
-                        f"Whisp_{idx}",
-                        txt_whisp,
-                        height=130
-                    )
-                    copy_to_clipboard(txt_whisp)
-                    st.write(f"Temps Whisper: {time.time()-start_whisp:.1f}s")
-
-                # Stocker histo whisper
-                eWhisp = {
-                    "Alias/Nom": f"{f_name}_Whisper",
-                    "Durée": f"{human_time(dur_s)}",
-                    "Temps": f"{(time.time()-start_whisp):.1f}s",
-                    "Transcription": txt_whisp
-                }
-                st.session_state["whisper_history"].append(eWhisp)
+                end_whisp = time.time()
+                st.success(f"Whisper Large terminé pour '{name_}'.")
 
             else:
-                # Simple
-                if single_model=="Nova 2":
+                # single
+                if model_main=="Nova 2":
                     chosen_model="nova-2"
                     chosen_lang="fr"
                 else:
                     chosen_model="whisper-large"
                     chosen_lang=lang_main
-
-                st.info(f"Lancement de {single_model} pour '{f_name}'...")
-                start_simp = time.time()
-                # si whisp>25MB => seg
-                do_seg2 = (chosen_model=="whisper-large" and os.path.getsize(temp_main)>25*1024*1024)
+                st.info(f"Transcription {model_main} pour '{name_}' (patientez).")
+                do_seg2 = (chosen_model=="whisper-large" and len(raw)>25*1024*1024)
+                final_s=""
+                cA, _ = st.columns([1,1])
                 if do_seg2:
-                    st.info("Fichier volumineux => segmentation (Whisper).")
-                    segm2 = segment_if_needed(raw, 25*1024*1024)
-                    cfs2=[]
-                    for si2, ssub2 in enumerate(segm2):
-                        tout2=f"whisp2_seg_{idx}_{si2}.wav"
-                        ssub2.export(tout2, format="wav")
-                        cfs2.append(tout2)
-                    txtlist2=[]
-                    for cf3 in cfs2:
-                        ksim = pick_key(keys)
-                        tx_ = nova_api.transcribe_audio(cf3, ksim, chosen_lang, chosen_model)
-                        txtlist2.append(tx_)
-                    for cf4 in cfs2:
-                        os.remove(cf4)
-                    final_simp = " ".join(txtlist2)
-                    end_simp = time.time()
+                    st.info("Segmentation car >25MB, Whisper Large.")
+                    segs2 = segment_if_needed(raw, threshold=25*1024*1024)
+                    partial2=[]
+                    for s_i2, ssub2 in enumerate(segs2):
+                        wav2 = f"temp_whisp2_{idx}_{s_i2}.wav"
+                        ssub2.export(wav2, format="wav")
+                        key_ = pick_key(keys)
+                        pc = nova_api.transcribe_audio(wav2, key_, chosen_lang, chosen_model)
+                        partial2.append(pc)
+                        final_s = " ".join(partial2)
+                        with cA:
+                            st.subheader(f"{model_main} - {name_}")
+                            st.text_area(
+                                f"whispSeg_{idx}",
+                                final_s,
+                                height=130
+                            )
+                            copy_button_js(final_s)
+                        os.remove(wav2)
                 else:
-                    ksim = pick_key(keys)
-                    final_simp = nova_api.transcribe_audio(temp_main, ksim, chosen_lang, chosen_model)
-                    end_simp = time.time()
+                    key3 = pick_key(keys)
+                    final_s = nova_api.transcribe_audio(tmpA, key3, chosen_lang, chosen_model)
+                    with cA:
+                        st.subheader(f"{model_main} - {name_}")
+                        st.text_area(
+                            f"Res_{idx}",
+                            final_s,
+                            height=130
+                        )
+                        copy_button_js(final_s)
 
-                st.success(f"Transcription terminée pour '{f_name}'.")
-                cA,_ = st.columns([1,1])
-                with cA:
-                    st.subheader(f"{single_model} - {f_name}")
-                    st.text_area(
-                        f"Single_{idx}",
-                        final_simp,
-                        height=130
-                    )
-                    copy_to_clipboard(final_simp)
-                    st.write(f"Temps: {end_simp - start_simp:.1f}s")
-
-                # Si c'est whisper => log histo
-                if chosen_model=="whisper-large":
-                    eW2 = {
-                        "Alias/Nom": f"{f_name}_Whisper",
-                        "Durée": f"{human_time(dur_s)}",
-                        "Temps": f"{(end_simp - start_simp):.1f}s",
-                        "Transcription": final_simp
-                    }
-                    st.session_state["whisper_history"].append(eW2)
-
-            if os.path.exists(temp_main):
-                os.remove(temp_main)
+            if os.path.exists(tmpA):
+                os.remove(tmpA)
 
 def main():
     if "init" not in st.session_state:
@@ -357,21 +287,21 @@ def main():
         st.session_state["init"] = True
 
     if st.session_state.get("blocked",False):
-        st.error("Vous êtes bloqué (trop de tentatives).")
+        st.error("Session bloquée (trop de tentatives).")
         st.stop()
-
     if not st.session_state.get("authorized",False):
         password_gate()
         if st.session_state.get("authorized",False):
-            app_main()
+            main_app()
     else:
-        app_main()
+        main_app()
 
 def main_wrapper():
     try:
         main()
     except Exception as e:
         st.error(f"Erreur Principale : {e}")
+        traceback.print_exc()
 
 if __name__=="__main__":
     main_wrapper()
