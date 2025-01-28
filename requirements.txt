@@ -6,3 +6,8 @@ pydub==0.25.1
 ffmpeg-python
 requests
 matplotlib>=3.5.0
+streamlit>=1.25.0
+pydub==0.25.1
+requests
+ffmpeg-python
+streamlit-webrtc
