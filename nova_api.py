@@ -30,28 +30,28 @@ def transcribe_audio(
             "punctuate": "true" if punctuate else "false",
             "numerals": "true" if numerals else "false"
         }
-        qs = "&".join([f"{k}={v}" for k,v in params.items()])
+        qs = "&".join([f"{k}={v}" for k, v in params.items()])
         url = f"https://api.deepgram.com/v1/listen?{qs}"
 
         headers = {
             "Authorization": f"Token {dg_api_key}",
             "Content-Type": "audio/wav"
         }
-        with open(temp_in,"rb") as f:
+        with open(temp_in, "rb") as f:
             payload = f.read()
 
         resp = requests.post(url, headers=headers, data=payload)
-        if resp.status_code==200:
+        if resp.status_code == 200:
             j = resp.json()
             return (
-                j.get("results",{})
-                 .get("channels",[{}])[0]
-                 .get("alternatives",[{}])[0]
-                 .get("transcript",""),
+                j.get("results", {})
+                 .get("channels", [{}])[0]
+                 .get("alternatives", [{}])[0]
+                 .get("transcript", ""),
                 True
             )
         else:
-            st.error(f"[DeepGram] Erreur {resp.status_code}: {resp.text}")
+            st.error(f"[DeepGram] Erreur {resp.status_code} : {resp.text}")
             if resp.status_code == 401:
                 # Invalid credentials
                 return "", False
