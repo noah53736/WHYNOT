@@ -2,13 +2,11 @@ import streamlit as st
 import os
 import json
 import random
-import string
 import time
-import subprocess
 from datetime import datetime
 from pydub import AudioSegment, silence
 
-import nova_api
+import nova_api  # Assure-toi que ce module est correctement configuré
 
 # --- Configuration de la Page ---
 st.set_page_config(page_title="NBL Audio", layout="wide")
@@ -37,127 +35,7 @@ def save_history(hist):
     with open(HISTORY_FILE, "w") as f:
         json.dump(hist, f, indent=4)
 
-def generate_alias(length=5):
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-def human_time(sec: float) -> str:
-    sec = int(sec)
-    if sec < 60:
-        return f"{sec}s"
-    elif sec < 3600:
-        m, s = divmod(sec, 60)
-        return f"{m}m{s}s"
-    else:
-        h, r = divmod(sec, 3600)
-        m, s = divmod(r, 60)
-        return f"{h}h{m}m{s}s"
-
-def accelerate_ffmpeg(audio_seg: AudioSegment, factor: float) -> AudioSegment:
-    if abs(factor - 1.0) < 1e-2:
-        return audio_seg
-    tmp_in = "temp_in_acc.wav"
-    tmp_out = "temp_out_acc.wav"
-    audio_seg.export(tmp_in, format="wav")
-    remain = factor
-    filters = []
-    while remain > 2.0:
-        filters.append("atempo=2.0")
-        remain /= 2.0
-    while remain < 0.5:
-        filters.append("atempo=0.5")
-        remain /= 0.5
-    filters.append(f"atempo={remain}")
-    f_str = ",".join(filters)
-    cmd = ["ffmpeg","-y","-i", tmp_in,"-filter:a", f_str, tmp_out]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    new_seg = AudioSegment.from_file(tmp_out, format="wav")
-    try:
-        os.remove(tmp_in)
-        os.remove(tmp_out)
-    except:
-        pass
-    return new_seg
-
-def remove_silences_classic(audio_seg: AudioSegment,
-                            min_silence_len=MIN_SILENCE_LEN,
-                            silence_thresh=SIL_THRESH_DB,
-                            keep_silence=KEEP_SIL_MS):
-    segs = silence.split_on_silence(
-        audio_seg,
-        min_silence_len=min_silence_len,
-        silence_thresh=silence_thresh,
-        keep_silence=keep_silence
-    )
-    if not segs:
-        return audio_seg
-    combined = segs[0]
-    for s in segs[1:]:
-        combined = combined.append(s, crossfade=0)
-    return combined
-
-def select_api_keys(credits, key_ids, duration_sec, cost_per_sec=COST_PER_SEC, used_keys=[]):
-    cost = duration_sec * cost_per_sec
-    selected = []
-    for key_id in key_ids:
-        if key_id in used_keys:
-            continue
-        if credits.get(key_id, 0) >= cost:
-            selected.append((key_id, cost))
-            if len(selected) == 2:
-                break
-    return selected
-
-def copy_to_clipboard(text):
-    script_html = f"""
-    <script>
-        function copyText(txt) {{
-            navigator.clipboard.writeText(txt).then(function() {{
-                alert('Transcription copiée dans le presse-papiers!');
-            }}, function(err) {{
-                alert('Échec de la copie : ' + err);
-            }});
-        }}
-    </script>
-    <button onclick="copyText(`{text}`)" style="margin:5px;">Copier</button>
-    """
-    st.components.v1.html(script_html)
-
-def load_credits():
-    if os.path.exists(CREDITS_FILE):
-        with open(CREDITS_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_credits(c):
-    with open(CREDITS_FILE, "w") as f:
-        json.dump(c, f, indent=4)
-
-def display_history():
-    st.sidebar.write("---")
-    st.sidebar.header("Historique")
-    h = st.session_state.get("history", [])
-    if h:
-        table = []
-        for en in h:
-            table.append({
-                "Alias/Nom": en["Alias/Nom"],
-                "Méthode": en["Méthode"],
-                "Modèle": en["Modèle"],
-                "Durée": en["Durée"],
-                "Temps": en["Temps"],
-                "Coût": en["Coût"],
-                "Date": en["Date"]
-            })
-        st.sidebar.table(table[::-1])
-        st.sidebar.write("### Aperçus Audio")
-        for en in reversed(h[-3:]):
-            st.sidebar.markdown(f"**{en['Alias/Nom']}** – {en['Date']}")
-            ab = bytes.fromhex(en["Audio Binaire"])
-            st.sidebar.audio(ab, format="audio/wav")
-    else:
-        st.sidebar.info("Historique vide.")
-
-def get_available_api_keys():
+def get_api_keys():
     """
     Récupère toutes les clés API disponibles depuis les secrets.
     Retourne une liste de tuples (clé, nom).
@@ -172,14 +50,23 @@ def get_available_api_keys():
             st.sidebar.error(f"Clé API manquante : {key_name}")
     return api_keys
 
+def select_api_key(api_keys, used_keys):
+    """
+    Sélectionne une clé API non utilisée.
+    """
+    available_keys = [key for key in api_keys if key[0] not in used_keys]
+    if not available_keys:
+        st.error("Toutes les clés API sont utilisées ou épuisées.")
+        return None
+    return random.choice(available_keys)
+
 def main():
     init_history()
     if "history" not in st.session_state:
         st.session_state["history"] = load_history()
     history = st.session_state["history"]
-    credits = load_credits()
 
-    st.title("N-B-L Audio : Transcription Grand Public")
+    st.title("NBL Audio : Transcription")
     st.write("Choisissez votre source audio (fichier, micro, ou multi), configurez les options dans la barre latérale, puis lancez la transcription.")
 
     # Barre latérale : options
@@ -195,17 +82,13 @@ def main():
 
     st.sidebar.write("---")
     st.sidebar.header("Langue")
-    lang_choice = st.sidebar.radio("Langue:", ["fr", "en"])
+    lang_choice = st.sidebar.radio("Langue:", ["fr", "en", "es", "de", "it", "pt", "ja", "ko", "zh"])
 
     # Récupération des clés API depuis les secrets
-    api_keys = get_available_api_keys()
+    api_keys = get_api_keys()
     if not api_keys:
         st.sidebar.error("Aucune clé API disponible. Veuillez ajouter des clés dans les Secrets de l'application.")
         st.stop()
-
-    # Initialisation de l'état des clés API
-    if 'available_keys' not in st.session_state:
-        st.session_state.available_keys = api_keys.copy()
 
     # Choix du mode d'entrée
     st.write("## Mode d'Entrée")
@@ -248,14 +131,14 @@ def main():
             if micX:
                 audio_data = micX.read()
                 st.audio(audio_data, format=micX.type)
-                rename = st.text_input(f"Nom Micro #{i} (optionnel)", f"micro_{i}.wav", key=f"rename_m_{i}")
+                rename = st.text_input(f"Nom Micro #{i} (Optionnel)", f"micro_{i}.wav", key=f"rename_m_{i}")
                 segments.append((audio_data, rename if rename else f"micro_{i}.wav"))
 
     # Bouton "Transcrire"
     if len(segments) > 0 and st.button("Transcrire Maintenant"):
         transcriptions = load_history()
         start_time = time.time()
-        used_api_indices = []  # Pour éviter de réutiliser la même clé simultanément
+        used_keys = []  # Pour éviter de réutiliser la même clé simultanément
 
         for idx, (audio_bytes, rename) in enumerate(segments):
             st.write(f"### Segment #{idx+1}: {rename}")
@@ -284,27 +167,27 @@ def main():
             # Sélection des clés API
             if double_mode:
                 # Besoin de deux clés différentes
-                available_indices = [i for i in range(len(st.session_state.available_keys)) if i not in used_api_indices]
-                if len(available_indices) < 2:
+                available_keys = [key for key in api_keys if key[0] not in used_keys]
+                if len(available_keys) < 2:
                     st.error("Pas assez de clés API disponibles pour la double transcription.")
                     os.remove(local_path)
                     os.remove(transformed_path)
                     continue
-                selected_indices = random.sample(available_indices, 2)
-                key1, name1 = st.session_state.available_keys[selected_indices[0]]
-                key2, name2 = st.session_state.available_keys[selected_indices[1]]
-                used_api_indices.extend([selected_indices[0], selected_indices[1]])
+                selected_keys = random.sample(available_keys, 2)
+                key1, name1 = selected_keys[0]
+                key2, name2 = selected_keys[1]
+                used_keys.extend([key1, key2])
             else:
                 # Besoin d'une seule clé
-                available_indices = [i for i in range(len(st.session_state.available_keys)) if i not in used_api_indices]
-                if not available_indices:
+                available_keys = [key for key in api_keys if key[0] not in used_keys]
+                if not available_keys:
                     st.error("Pas assez de clés API disponibles pour la transcription.")
                     os.remove(local_path)
                     os.remove(transformed_path)
                     continue
-                selected_index = random.choice(available_indices)
-                key1, name1 = st.session_state.available_keys[selected_index]
-                used_api_indices.append(selected_index)
+                selected_key = random.choice(available_keys)
+                key1, name1 = selected_key
+                used_keys.append(key1)
 
             # Transcription
             try:
@@ -319,8 +202,8 @@ def main():
                     )
                     if not success_nova2:
                         st.warning("Erreur avec Nova2. Passage à une autre clé si disponible.")
-                        # Relancer avec une autre clé si disponible
-                        remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
+                        # Sélectionner une autre clé
+                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
                         if remaining_keys:
                             key1_new, name1_new = remaining_keys[0]
                             transcript_nova2, success_nova2 = nova_api.transcribe_audio(
@@ -330,7 +213,7 @@ def main():
                                 model_name="nova-2"
                             )
                             if success_nova2:
-                                used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
+                                used_keys.append(key1_new)
                         else:
                             st.error("Toutes les clés Nova2 sont épuisées.")
                             transcript_nova2 = "Erreur de transcription Nova2."
@@ -349,8 +232,8 @@ def main():
                     )
                     if not success_whisper:
                         st.warning("Erreur avec WhisperLarge. Passage à une autre clé si disponible.")
-                        # Relancer avec une autre clé si disponible
-                        remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
+                        # Sélectionner une autre clé
+                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
                         if remaining_keys:
                             key2_new, name2_new = remaining_keys[0]
                             transcript_whisper, success_whisper = nova_api.transcribe_audio(
@@ -360,7 +243,7 @@ def main():
                                 model_name="whisper-large"
                             )
                             if success_whisper:
-                                used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
+                                used_keys.append(key2_new)
                         else:
                             st.error("Toutes les clés WhisperLarge sont épuisées.")
                             transcript_whisper = "Erreur de transcription WhisperLarge."
@@ -381,44 +264,20 @@ def main():
                         st.text_area("", transcript_whisper, height=150)
                         copy_to_clipboard(transcript_whisper)
 
-                    # Calcul du coût
-                    cost1 = final_sec * COST_PER_SEC
-                    cost2 = final_sec * COST_PER_SEC
-                    total_cost = cost1 + cost2
-
                     # Sauvegarder dans l'historique
-                    alias1 = generate_alias(6) if not rename else f"{rename}_Nova2"
-                    alias2 = generate_alias(6) if not rename else f"{rename}_Whisper"
-                    e1 = {
-                        "Alias/Nom": alias1,
+                    transcriptions.append({
+                        "Alias/Nom": rename,
                         "Méthode": "Nova 2",
                         "Modèle": "nova-2",
                         "Durée": human_time(orig_sec),
                         "Temps": human_time(time.time() - start_time),
-                        "Coût": f"${cost1:.2f}",
-                        "Transcription": transcript_nova2,
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Audio Binaire": audio_bytes.hex()
-                    }
-                    e2 = {
-                        "Alias/Nom": alias2,
-                        "Méthode": "Whisper Large",
-                        "Modèle": "whisper-large",
-                        "Durée": human_time(orig_sec),
-                        "Temps": human_time(time.time() - start_time),
-                        "Coût": f"${cost2:.2f}",
-                        "Transcription": transcript_whisper,
-                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Audio Binaire": audio_bytes.hex()
-                    }
-                    st.session_state["history"].extend([e1, e2])
-                    save_history(st.session_state["history"])
-
-                    # Mise à jour des crédits
-                    credits[key1] -= cost1
-                    credits[key2] -= cost2
-                    save_credits(credits)
-                    st.success("Historique mis à jour et crédits déduits.")
+                        "Coût": f"${final_sec * COST_PER_SEC * 2:.2f}",
+                        "Transcription": {
+                            "Nova2": transcript_nova2,
+                            "WhisperLarge": transcript_whisper
+                        },
+                        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    })
                 else:
                     # Simple transcription
                     st.info(f"Transcription {model_choice} en cours...")
@@ -430,8 +289,8 @@ def main():
                     )
                     if not success:
                         st.warning(f"Erreur avec {model_choice}. Passage à une autre clé si disponible.")
-                        # Relancer avec une autre clé si disponible
-                        remaining_keys = [k for k in st.session_state.available_keys if k not in used_api_indices]
+                        # Sélectionner une autre clé
+                        remaining_keys = [key for key in api_keys if key[0] not in used_keys]
                         if remaining_keys:
                             key1_new, name1_new = remaining_keys[0]
                             transcript, success = nova_api.transcribe_audio(
@@ -441,7 +300,7 @@ def main():
                                 model_name=model_map[model_choice]
                             )
                             if success:
-                                used_api_indices.append(st.session_state.available_keys.index(remaining_keys[0]))
+                                used_keys.append(key1_new)
                         else:
                             st.error(f"Échec de la transcription {model_choice} avec toutes les clés disponibles.")
                             transcript = f"Erreur de transcription {model_choice}."
@@ -451,40 +310,120 @@ def main():
                         st.text_area("", transcript, height=150)
                         copy_to_clipboard(transcript)
 
-                        # Calcul du coût
-                        cost = final_sec * COST_PER_SEC
-
                         # Sauvegarder dans l'historique
-                        aliasx = generate_alias(6) if not rename else rename
-                        eX = {
-                            "Alias/Nom": aliasx,
+                        transcriptions.append({
+                            "Alias/Nom": rename,
                             "Méthode": model_choice,
                             "Modèle": model_map[model_choice],
                             "Durée": human_time(orig_sec),
                             "Temps": human_time(time.time() - start_time),
-                            "Coût": f"${cost:.2f}",
+                            "Coût": f"${final_sec * COST_PER_SEC:.2f}",
                             "Transcription": transcript,
-                            "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "Audio Binaire": audio_bytes.hex()
-                        }
-                        st.session_state["history"].append(eX)
-                        save_history(st.session_state["history"])
-
-                        # Mise à jour des crédits
-                        credits[key1] -= cost
-                        save_credits(credits)
-                        st.success("Historique mis à jour et crédits déduits.")
+                            "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        })
             except Exception as e:
-                st.error(f"Erreur Transcription : {e}")
+                st.error(f"Erreur lors de la transcription pour le segment #{idx+1}: {e}")
             finally:
                 # Nettoyage des fichiers temporaires
-                if os.path.exists("temp_input.wav"):
-                    os.remove("temp_input.wav")
-                if os.path.exists("temp_transformed.wav"):
-                    os.remove("temp_transformed.wav")
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                if os.path.exists(transformed_path):
+                    os.remove(transformed_path)
 
-    def main_wrapper():
-        main()
+        # Sauvegarder toutes les transcriptions
+        save_history(transcriptions)
+        elapsed_time = time.time() - start_time
+        st.success(f"Toutes les transcriptions sont terminées en {elapsed_time:.1f}s.")
+
+        # Rafraîchir la page pour mettre à jour l'historique
+        st.experimental_rerun()
+
+    def copy_to_clipboard(text):
+        script_html = f"""
+        <script>
+            function copyText(txt) {{
+                navigator.clipboard.writeText(txt).then(function() {{
+                    alert('Transcription copiée dans le presse-papiers!');
+                }}, function(err) {{
+                    alert('Échec de la copie : ' + err);
+                }});
+            }}
+        </script>
+        <button onclick="copyText(`{text}`)" style="margin:5px;">Copier</button>
+        """
+        st.components.v1.html(script_html)
 
     if __name__ == "__main__":
-        main_wrapper()
+        main()
+    ```
+
+#### **b. Module `nova_api.py`**
+
+Assure-toi que ce module utilise les clés API de manière sécurisée et gère les erreurs pour permettre la rotation des clés en cas d'échec.
+
+```python
+import os
+import requests
+import streamlit as st
+import traceback
+from pydub import AudioSegment
+
+def transcribe_audio(
+    file_path: str,
+    dg_api_key: str,
+    language: str = "fr",
+    model_name: str = "nova-2",
+    punctuate: bool = True,
+    numerals: bool = True
+) -> (str, bool):
+    """
+    Envoie le fichier audio à DeepGram pour transcription (Nova ou Whisper).
+    Retourne la transcription et un booléen indiquant le succès.
+    """
+    temp_in = "temp_audio.wav"
+    try:
+        # Convertir en 16kHz WAV
+        audio = AudioSegment.from_file(file_path)
+        audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio_16k.export(temp_in, format="wav")
+
+        # Paramètres
+        params = {
+            "language": language,
+            "model": model_name,
+            "punctuate": "true" if punctuate else "false",
+            "numerals": "true" if numerals else "false"
+        }
+        qs = "&".join([f"{k}={v}" for k, v in params.items()])
+        url = f"https://api.deepgram.com/v1/listen?{qs}"
+
+        headers = {
+            "Authorization": f"Token {dg_api_key}",
+            "Content-Type": "audio/wav"
+        }
+        with open(temp_in, "rb") as f:
+            payload = f.read()
+
+        resp = requests.post(url, headers=headers, data=payload)
+        if resp.status_code == 200:
+            j = resp.json()
+            return (
+                j.get("results", {})
+                 .get("channels", [{}])[0]
+                 .get("alternatives", [{}])[0]
+                 .get("transcript", ""),
+                True
+            )
+        else:
+            st.error(f"[DeepGram] Erreur {resp.status_code} : {resp.text}")
+            if resp.status_code == 401:
+                # Invalid credentials
+                return "", False
+            return "", False
+    except Exception as e:
+        st.error(f"[DeepGram] Exception : {e}")
+        traceback.print_exc()
+        return "", False
+    finally:
+        if os.path.exists(temp_in):
+            os.remove(temp_in)
