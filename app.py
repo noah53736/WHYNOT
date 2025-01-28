@@ -21,6 +21,9 @@ st.set_page_config(page_title="NBL Audio", layout="wide")
 def init_state():
     if "history" not in st.session_state:
         st.session_state["history"] = []
+    # Historique "whisper-only"
+    if "whisper_history" not in st.session_state:
+        st.session_state["whisper_history"] = []
     if "dg_key_index" not in st.session_state:
         st.session_state["dg_key_index"] = 0
     if "pwd_attempts" not in st.session_state:
@@ -37,7 +40,8 @@ def get_dg_keys():
 def pick_key(keys):
     """
     On ne fait pas de rotation multiple.
-    On prend la clé courante, si on dépasse => retour index 0.
+    On prend la clé courante, 
+    si on dépasse => retour index 0.
     """
     if not keys:
         return None
@@ -102,48 +106,33 @@ def password_gate():
             attempts = st.session_state["pwd_attempts"]
             st.error(f"Mot de passe invalide. (Tentative {attempts}/4)")
 
-#########################
-# SEGMENTATION (22 MB)  #
-#########################
-def segment_if_needed(raw_data: bytes, threshold=22*1024*1024):
-    """
-    Segmente le fichier en ~22MB si c'est plus grand,
-    UNIQUEMENT pour Whisper Large usage.
-    """
-    if len(raw_data) <= threshold:
-        return [AudioSegment.from_file(io.BytesIO(raw_data))]
-    st.info("Fichier volumineux => segmentation par blocs de 22MB (Whisper Large).")
-    full_seg = AudioSegment.from_file(io.BytesIO(raw_data))
-    segments = []
-    length_ms = len(full_seg)
-    # proportionnel
-    step_ms = int(length_ms * (threshold/len(raw_data)))
-    start = 0
-    while start < length_ms:
-        end = min(start+step_ms, length_ms)
-        segments.append(full_seg[start:end])
-        start = end
-    return segments
-
-#########################
-#   FONCTION TRANSCRIBE #
-#########################
-def transcribe_chunklist(chunk_files, model, lang, keys):
-    """
-    Transcrit successivement chaque chunk 'chunk_files' (WAV)
-    et assemble le résultat.
-    """
-    texts = []
-    for cf in chunk_files:
-        k = pick_key(keys)
-        txt = nova_api.transcribe_audio(cf, k, lang, model)
-        texts.append(txt)
-    return " ".join(texts)
+###############################
+#  AFFICHAGE HISTO WHISPER    #
+###############################
+def display_whisper_history():
+    st.sidebar.write("---")
+    st.sidebar.header("Historique Whisper Only")
+    if st.session_state["whisper_history"]:
+        table = []
+        for wh in st.session_state["whisper_history"]:
+            table.append({
+                "Nom": wh["Alias/Nom"],
+                "Durée": wh["Durée"],
+                "Temps": wh["Temps"],
+                "Transcrit?": (wh["Transcription"][:30] + "...") if wh["Transcription"] else ""
+            })
+        st.sidebar.table(table[::-1])
+        if st.sidebar.button("Vider Historique Whisper", key="clear_whisp"):
+            st.session_state["whisper_history"].clear()
+            st.experimental_rerun()
+    else:
+        st.sidebar.info("Aucun historique Whisper.")
 
 #########################
 #     APP PRINCIPALE    #
 #########################
 def app_main():
+    display_whisper_history()
     st.title("NBL Audio")
 
     # Micro par défaut => index=1
@@ -152,13 +141,13 @@ def app_main():
     file_names = []
 
     if src_type=="Fichier (Upload)":
-        uploaded_files = st.file_uploader(
+        upfs = st.file_uploader(
             "Importer vos fichiers audio",
             type=["mp3","wav","m4a","ogg","webm"],
             accept_multiple_files=True
         )
-        if uploaded_files:
-            for f in uploaded_files:
+        if upfs:
+            for f in upfs:
                 audio_data_list.append(f.read())
                 file_names.append(f.name)
                 st.audio(f, format=f.type)
@@ -175,18 +164,18 @@ def app_main():
     st.subheader("Options de Transcription")
     st.markdown("""
 **Double Transcription** (par défaut): 
-1. Nova 2 (rapide)
-2. Whisper Large (précise ~99%)
+1. Nova 2 (rapide) 
+2. Whisper Large (plus lent, ~99% précision)
 """)
     double_trans = st.checkbox("Double Transcription (Nova2 -> Whisper)", value=True)
 
-    colA, colB = st.columns([1,1])
+    colA,colB = st.columns([1,1])
     with colA:
-        model_single = st.selectbox("Modèle Unique", ["Nova 2","Whisper Large"])
+        model_main = st.selectbox("Modèle (unique si pas double)", ["Nova 2","Whisper Large"])
     with colB:
-        lang_single = "fr"
-        if model_single=="Whisper Large":
-            lang_single = st.selectbox("Langue (Whisper)", ["fr","en"])
+        lang_main = "fr"
+        if model_main=="Whisper Large":
+            lang_main = st.selectbox("Langue (Whisper):", ["fr","en"])
 
     if st.button("Transcrire") and audio_data_list:
         st.info("Transcription en cours...")
@@ -199,99 +188,94 @@ def app_main():
             seg = AudioSegment.from_file(io.BytesIO(raw_data))
             dur_s = len(seg)/1000.0
             f_name = file_names[idx] if idx<len(file_names) else f"Fichier_{idx+1}"
-            st.write(f"### Fichier {idx+1}: {f_name} (Durée {human_time(dur_s)})")
 
-            # Détection si besoin segmentation
-            # => SEULEMENT si Whisper est utilisé (double trans => whisper ou single => whisper)
-            # => ET plus de 22 MB
-            need_seg = False
-            if double_trans:
-                # Dans double trans => whisper always used
-                if len(raw_data) > (22*1024*1024):
-                    need_seg = True
-            else:
-                if model_single=="Whisper Large" and len(raw_data)>(22*1024*1024):
-                    need_seg = True
+            st.write(f"### Fichier {idx+1} : {f_name} (Durée: {human_time(dur_s)})")
 
-            # On segmente si besoin
-            if need_seg:
-                segments = segment_if_needed(raw_data, threshold=22*1024*1024)
-            else:
-                segments = [seg]
-
-            # Crée des fichiers .wav => on envoie
-            chunk_files = []
-            for s_i, s_seg in enumerate(segments):
-                tmpf = f"tmp_{idx}_{s_i}.wav"
-                s_seg.export(tmpf, format="wav")
-                chunk_files.append(tmpf)
+            temp_wav = f"temp_input_{idx}.wav"
+            seg.export(temp_wav, format="wav")
 
             if double_trans:
                 # 1) Nova 2
-                st.write(f"**{f_name} => Nova 2 (rapide)**")
-                st.info("Démarrage Nova 2...")
+                st.write(f"**{f_name} => Nova 2** (rapide)")
                 start_nova = time.time()
-                final_nova = transcribe_chunklist(chunk_files, "nova-2", "fr", keys)
+                key_nova = pick_key(keys)
+                txt_nova = nova_api.transcribe_audio(temp_wav, key_nova, "fr", "nova-2")
                 end_nova = time.time()
 
-                st.success("Nova 2 fini => en attente de Whisper Large...")
+                # Affiche direct le Nova
+                st.success(f"Nova 2 terminé pour {f_name}, en attente de WhisperLarge...")
+                leftC, rightC = st.columns(2)
+                with leftC:
+                    st.subheader(f"NOVA 2 - {f_name}")
+                    st.text_area(
+                        f"Nova_{f_name}",
+                        txt_nova,
+                        key=f"nova_{idx}",
+                        height=120
+                    )
+                    copy_to_clipboard(txt_nova)
+                    st.write(f"Temps Nova : {end_nova - start_nova:.1f}s")
 
                 # 2) Whisper Large
-                st.write(f"**{f_name} => Whisper Large (plus précise)**")
-                st.info("Démarrage Whisper Large...")
+                st.info(f"Début Whisper Large pour {f_name}...")
                 start_whisp = time.time()
-                final_whisp = transcribe_chunklist(chunk_files, "whisper-large", lang_single, keys)
+                key_whisp = pick_key(keys)
+                txt_whisp = nova_api.transcribe_audio(temp_wav, key_whisp, lang_main, "whisper-large")
                 end_whisp = time.time()
 
-                # AFFICHAGE
-                cL, cR = st.columns(2)
-                with cL:
-                    st.subheader(f"{f_name} - Nova 2")
-                    st.text_area(
-                        f"Nova2_{f_name}",
-                        final_nova,
-                        key=f"nova2_{idx}",
-                        height=150
-                    )
-                    copy_to_clipboard(final_nova)
-                    st.write(f"Temps Nova2: {end_nova - start_nova:.1f}s")
-
-                with cR:
-                    st.subheader(f"{f_name} - Whisper Large")
+                with rightC:
+                    st.subheader(f"WHISPER LARGE - {f_name}")
                     st.text_area(
                         f"Whisp_{f_name}",
-                        final_whisp,
+                        txt_whisp,
                         key=f"whisp_{idx}",
-                        height=150
+                        height=120
                     )
-                    copy_to_clipboard(final_whisp)
-                    st.write(f"Temps Whisper: {end_whisp - start_whisp:.1f}s")
+                    copy_to_clipboard(txt_whisp)
+                    st.write(f"Temps Whisper : {end_whisp - start_whisp:.1f}s")
+
+                # On stocke l'historique whisper
+                eWhisp = {
+                    "Alias/Nom": f"{f_name}_Whisper",
+                    "Durée": f"{human_time(dur_s)}",
+                    "Temps": f"{(end_whisp - start_whisp):.1f}s",
+                    "Transcription": txt_whisp
+                }
+                st.session_state["whisper_history"].append(eWhisp)
 
             else:
-                # Mode unique => soit Nova2 soit Whisper
-                chosen_model = "nova-2" if model_single=="Nova 2" else "whisper-large"
-                chosen_lang = "fr" if chosen_model=="nova-2" else lang_single
-                st.write(f"**{f_name} => {model_single}**")
+                # Simple
                 start_simp = time.time()
-                final_simp = transcribe_chunklist(chunk_files, chosen_model, chosen_lang, keys)
+                key_simp = pick_key(keys)
+                chosen_model = "nova-2" if model_main=="Nova 2" else "whisper-large"
+                chosen_lang = "fr" if chosen_model=="nova-2" else lang_main
+                txt_simp = nova_api.transcribe_audio(temp_wav, key_simp, chosen_lang, chosen_model)
                 end_simp = time.time()
 
-                leftC, _ = st.columns([1,1])
-                with leftC:
-                    st.subheader(f"{f_name} - {model_single}")
+                cA, _ = st.columns([1,1])
+                with cA:
+                    st.subheader(f"{model_main} - {f_name}")
                     st.text_area(
-                        f"simple_{f_name}",
-                        final_simp,
-                        key=f"textarea_{idx}_{model_single}",
-                        height=150
+                        f"Result_{f_name}",
+                        txt_simp,
+                        key=f"simple_{idx}",
+                        height=120
                     )
-                    copy_to_clipboard(final_simp)
+                    copy_to_clipboard(txt_simp)
                     st.write(f"Temps: {end_simp - start_simp:.1f}s")
 
-            # Nettoyage
-            for c_ in chunk_files:
-                if os.path.exists(c_):
-                    os.remove(c_)
+                # Si c'est Whisper Large, on stocke
+                if chosen_model=="whisper-large":
+                    eW = {
+                        "Alias/Nom": f"{f_name}_Whisper",
+                        "Durée": f"{human_time(dur_s)}",
+                        "Temps": f"{(end_simp - start_simp):.1f}s",
+                        "Transcription": txt_simp
+                    }
+                    st.session_state["whisper_history"].append(eW)
+
+            if os.path.exists(temp_wav):
+                os.remove(temp_wav)
 
 def main():
     if "init" not in st.session_state:
