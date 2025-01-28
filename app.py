@@ -221,8 +221,6 @@ def main():
     speed_factor = st.sidebar.slider("Accélération Audio", 0.5, 4.0, 1.0, 0.1)
 
     st.sidebar.write("---")
-    st.sidebar.header("Langue des Options")
-    # Vous pouvez ajouter ici des options de localisation si nécessaire
 
     # Récupération des clés API depuis les secrets
     api_keys = get_available_api_keys()
@@ -338,7 +336,7 @@ def main():
                         transformed_path,
                         key1,
                         language=selected_lang,
-                        model_name="nova-2"
+                        model_name="nova-2"  # Assurez-vous que c'est le nom correct
                     )
                     if not success_nova2:
                         st.warning("Erreur avec Nova II. Passage à une autre clé si disponible.")
@@ -408,9 +406,9 @@ def main():
                     transcriptions.append({
                         "audio_name": rename,
                         "double_mode": True,
-                        "model_nova2": "nova-2",
+                        "model_nova2": "Nova II",
                         "transcript_nova2": transcript_nova2,
-                        "model_whisper": "whisper-large",
+                        "model_whisper": "Whisper Large",
                         "transcript_whisper": transcript_whisper,
                         "duration": human_time(orig_sec),
                         "elapsed_time": human_time(time.time() - start_time),
