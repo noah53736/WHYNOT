@@ -10,12 +10,12 @@ def transcribe_audio(
     file_path: str,
     dg_api_key: str,
     language: str = "fr",
-    model_name: str = "nova-2",
+    model_name: str = "nova-2",  # Utilisation cohérente des noms des modèles
     punctuate: bool = True,
     numerals: bool = True
 ) -> (str, bool):
     """
-    Envoie le fichier audio à DeepGram pour transcription (Nova ou Whisper).
+    Envoie le fichier audio à DeepGram pour transcription (Nova II ou Whisper Large).
     Retourne la transcription et un booléen indiquant le succès.
     """
     temp_in = "temp_audio.wav"
@@ -41,6 +41,10 @@ def transcribe_audio(
         }
         with open(temp_in, "rb") as f:
             payload = f.read()
+
+        # Ajout de journaux de débogage
+        st.write(f"Utilisation de la clé API: {dg_api_key[:4]}****")
+        st.write(f"Modèle utilisé: {model_name}")
 
         resp = requests.post(url, headers=headers, data=payload)
         if resp.status_code == 200:
