@@ -1,14 +1,14 @@
+
 # app.py
 
 import streamlit as st
 import os
 import json
-import random
-import string
 import time
-import subprocess
 from datetime import datetime
 from pydub import AudioSegment, silence
+import threading
+import subprocess
 
 import nova_api
 
@@ -35,9 +35,6 @@ def load_history():
 def save_history(hist):
     with open(HISTORY_FILE, "w") as f:
         json.dump(hist, f, indent=4)
-
-def generate_alias(length=5):
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 def human_time(sec: float) -> str:
     sec = int(sec)
@@ -122,19 +119,22 @@ def display_history_side():
     else:
         st.sidebar.write(f"Total: {len(history)} transcriptions.")
         for item in history[::-1][:8]:
-            st.sidebar.markdown(f"- **{item.get('audio_name','?')}** / {item.get('date','?')}")
+            if item["double_mode"]:
+                st.sidebar.markdown(f"- **{item.get('audio_name','?')}** / {item.get('date','?')}")
+            else:
+                st.sidebar.markdown(f"- **{item.get('audio_name','?')}** / {item.get('date','?')}")
 
-def get_available_api_keys():
+def get_api_keys():
     """
-    Récupère toutes les clés API disponibles depuis les secrets.
-    Retourne une liste de tuples (clé, nom).
+    Récupère les clés API depuis les secrets.
+    Retourne une liste de clés.
     """
     api_keys = []
     for i in range(1, 16):
-        key_name = f"NOVA{i}"
+        key_name = f"OVA{i}"
         try:
             key = st.secrets[key_name]
-            api_keys.append((key, key_name))
+            api_keys.append(key)
         except KeyError:
             st.sidebar.error(f"Clé API manquante : {key_name}")
     return api_keys
@@ -150,7 +150,7 @@ def main():
     display_history_side()
 
     st.title("NBL Audio : Transcription")
-    st.markdown("Choisissez votre source audio (fichier, micro, ou multi), configurez les options dans la barre latérale, puis lancez la transcription.")
+    st.markdown("Téléchargez vos fichiers audio, configurez les options dans la barre latérale, puis lancez la transcription.")
 
     st.sidebar.write("---")
     st.sidebar.header("Paramètres de Transcription")
@@ -181,7 +181,7 @@ def main():
     st.sidebar.write("---")
 
     # Récupération des clés API depuis les secrets
-    api_keys = get_available_api_keys()
+    api_keys = get_api_keys()
     if not api_keys:
         st.sidebar.error("Aucune clé API disponible. Veuillez ajouter des clés dans les Secrets de l'application.")
         st.stop()
@@ -191,56 +191,39 @@ def main():
 
     # Choix du mode d'entrée
     st.write("## Mode d'Entrée")
-    input_type = st.radio("", ["Fichier (Upload)", "Micro (Enregistrement)", "Multi-Fichiers", "Multi-Micro"])
+    upf = st.file_uploader("Importer les fichiers audio (max 15)", type=["mp3","wav","m4a","ogg","webm"], accept_multiple_files=True)
     segments = []  # Liste de tuples (fichier, nom)
 
-    if input_type == "Fichier (Upload)":
-        upf = st.file_uploader("Importer l'audio", type=["mp3","wav","m4a","ogg","webm"])
-        if upf:
-            if upf.size > 200 * 1024 * 1024:
-                st.warning("Fichier > 200MB (limite Streamlit).")
-            else:
-                audio_data = upf.read()
-                st.audio(audio_data, format=upf.type)
-                file_name = st.text_input("Nom du Fichier (Optionnel)", upf.name, key="rename_single")
-                segments.append((audio_data, file_name if file_name else upf.name))
-    elif input_type == "Micro (Enregistrement)":
-        mic_input = st.audio_input("Micro")
-        if mic_input:
-            audio_data = mic_input.read()
-            st.audio(audio_data, format=mic_input.type)
-            file_name = st.text_input("Nom (Optionnel)", "micro.wav", key="rename_micro_single")
-            segments.append((audio_data, file_name if file_name else "micro.wav"))
-    elif input_type == "Multi-Fichiers":
-        st.write("Chargez plusieurs fichiers d'un coup (max 15):")
-        many_files = st.file_uploader("Importer plusieurs fichiers", accept_multiple_files=True, type=["mp3","wav","m4a","ogg","webm"])
-        if many_files:
-            for idx, fobj in enumerate(many_files):
+    if upf:
+        if len(upf) > 15:
+            st.warning("Vous pouvez importer jusqu'à 15 fichiers à la fois.")
+        else:
+            for idx, fobj in enumerate(upf):
                 if fobj.size > 200 * 1024 * 1024:
                     st.warning(f"Fichier #{idx+1} > 200MB (limite Streamlit).")
                     continue
                 audio_data = fobj.read()
                 st.audio(audio_data, format=fobj.type)
-                rename = st.text_input(f"Renommer Fichier #{idx+1} (optionnel)", fobj.name, key=f"rename_f_{idx}")
-                segments.append((audio_data, rename if rename else fobj.name))
-    else:  # Multi-Micro
-        st.write("Enregistrez plusieurs micros (max 15):")
-        for i in range(1, 16):
-            micX = st.audio_input(f"Enregistrement Micro #{i}", key=f"mic_{i}")
-            if micX:
-                audio_data = micX.read()
-                st.audio(audio_data, format=micX.type)
-                rename = st.text_input(f"Nom Micro #{i} (Optionnel)", f"micro_{i}.wav", key=f"rename_m_{i}")
-                segments.append((audio_data, rename if rename else f"micro_{i}.wav"))
+                file_name = fobj.name  # Pas d'option de renommage pour simplifier
+                segments.append((audio_data, file_name))
 
     # Bouton "Transcrire"
     if len(segments) > 0 and st.button("Transcrire Maintenant"):
         transcriptions = load_history()
         start_time = time.time()
-        used_keys = []  # Pour éviter de réutiliser la même clé simultanément
 
-        for idx, (audio_bytes, rename) in enumerate(segments):
+        # Vérifier si suffisamment de clés API sont disponibles
+        if len(api_keys) < len(segments):
+            st.warning(f"Nombre de fichiers ({len(segments)}) dépasse le nombre de clés API disponibles ({len(api_keys)}). Certains fichiers ne seront pas transcrits.")
+        
+        # Limiter le nombre de fichiers à traiter selon les clés API disponibles
+        files_to_process = segments[:len(api_keys)]
+
+        for idx, (audio_bytes, rename) in enumerate(files_to_process):
             st.write(f"### Segment #{idx+1}: {rename}")
+            # Assignation de la clé API pour ce fichier
+            api_key = api_keys[idx]
+
             # Sauvegarder localement
             local_path = f"temp_input_{idx}.wav"
             with open(local_path, "wb") as ff:
@@ -263,33 +246,20 @@ def main():
                 os.remove(local_path)
                 continue
 
-            # Sélection des clés API
-            available_keys = [key for key in api_keys if key[0] not in used_keys]
-            if len(available_keys) < 2:
-                st.error("Pas assez de clés API disponibles pour la double transcription.")
-                os.remove(local_path)
-                os.remove(transformed_path)
-                continue
-            selected_keys = random.sample(available_keys, 2)
-            key_nova2, name_nova2 = selected_keys[0]
-            key_whisper, name_whisper = selected_keys[1]
-            used_keys.extend([key_nova2, key_whisper])
-
             # Création des placeholders pour afficher les transcriptions dès qu'elles sont prêtes
             placeholder_nova2 = st.empty()
             placeholder_whisper = st.empty()
 
-            # Transcription Nova II
-            def transcribe_nova2():
+            # Fonction de transcription Nova II
+            def transcribe_nova2(path, key, placeholder):
                 transcript, success = nova_api.transcribe_audio(
-                    transformed_path,
-                    key_nova2,
-                    language="fr",  # Langue non nécessaire pour Nova II si elle ne supporte pas la sélection
+                    path,
+                    key,
                     model_name="nova-2"
                 )
                 if success:
-                    placeholder_nova2.success("Transcription Nova II terminée.")
-                    placeholder_nova2.text_area("Nova II", transcript, height=150)
+                    placeholder.success("Transcription Nova II terminée.")
+                    placeholder.text_area("Nova II", transcript, height=150)
                     copy_to_clipboard(transcript)
                     # Ajouter à l'historique
                     transcriptions.append({
@@ -305,32 +275,31 @@ def main():
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                 else:
-                    placeholder_nova2.error("Erreur lors de la transcription Nova II.")
+                    placeholder.error("Erreur lors de la transcription Nova II.")
 
-            # Transcription Whisper Large
-            def transcribe_whisper():
+            # Fonction de transcription Whisper Large
+            def transcribe_whisper(path, key, lang, placeholder):
                 transcript, success = nova_api.transcribe_audio(
-                    transformed_path,
-                    key_whisper,
-                    language=selected_lang,
+                    path,
+                    key,
+                    language=lang,
                     model_name="whisper-large"
                 )
                 if success:
-                    placeholder_whisper.success("Transcription Whisper Large terminée.")
-                    placeholder_whisper.text_area("Whisper Large", transcript, height=150)
+                    placeholder.success("Transcription Whisper Large terminée.")
+                    placeholder.text_area("Whisper Large", transcript, height=150)
                     copy_to_clipboard(transcript)
                     # Mettre à jour l'historique avec la transcription Whisper Large
                     for transcription in transcriptions:
-                        if transcription["audio_name"] == rename and transcription["double_mode"]:
+                        if transcription["audio_name"] == rename and transcription["double_mode"] and transcription["transcript_whisper"] == "":
                             transcription["transcript_whisper"] = transcript
                             break
                 else:
-                    placeholder_whisper.error("Erreur lors de la transcription Whisper Large.")
+                    placeholder.error("Erreur lors de la transcription Whisper Large.")
 
             # Lancer les transcriptions dans des threads pour les exécuter simultanément
-            import threading
-            thread_nova2 = threading.Thread(target=transcribe_nova2)
-            thread_whisper = threading.Thread(target=transcribe_whisper)
+            thread_nova2 = threading.Thread(target=transcribe_nova2, args=(transformed_path, api_key, placeholder_nova2))
+            thread_whisper = threading.Thread(target=transcribe_whisper, args=(transformed_path, api_key, selected_lang, placeholder_whisper))
             thread_nova2.start()
             thread_whisper.start()
 
