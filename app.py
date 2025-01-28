@@ -12,7 +12,6 @@ from datetime import datetime
 from pydub import AudioSegment, silence
 import subprocess
 
-# Import pour l'enregistrement via le micro
 from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
 # -----------------------------------------------------------
@@ -301,6 +300,10 @@ def main():
 
         for i, (name, audio_bytes) in enumerate(seg_to_process):
             st.write(f"### Fichier #{i+1}: {name}")
+            # Renommage de fichier
+            new_name = st.text_input(f"Renommer {name} :", value=name, key=f"rename_{i}")
+            if not new_name:
+                new_name = name
             # Sauvegarde locale
             in_path = f"temp_in_{i}.wav"
             with open(in_path, "wb") as w:
@@ -328,9 +331,10 @@ def main():
             # Récupère la clé API pour ce fichier
             key_api = api_keys[i]
 
-            # Placeholders
-            place_nova = st.empty()
-            place_whisper = st.empty()
+            # Placeholders pour transcriptions côte à côte
+            cols = st.columns(2)
+            place_nova = cols[0].empty()
+            place_whisper = cols[1].empty()
 
             # Fonctions
             def run_nova(path, api_key, placeholder):
@@ -341,7 +345,7 @@ def main():
                     copy_to_clipboard(txt)
                     # Ajout dans hist
                     st.session_state["history"].append({
-                        "audio_name": name,
+                        "audio_name": new_name,
                         "double_mode": True,
                         "model_nova2": "nova-2",
                         "transcript_nova2": txt,
@@ -363,7 +367,7 @@ def main():
                     copy_to_clipboard(txt)
                     # Mettre à jour hist
                     for item in reversed(st.session_state["history"]):
-                        if item["audio_name"] == name and item["double_mode"] and not item["transcript_whisper"]:
+                        if item["audio_name"] == new_name and item["double_mode"] and not item["transcript_whisper"]:
                             item["transcript_whisper"] = txt
                             break
                 else:
