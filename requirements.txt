@@ -11,3 +11,4 @@ pydub==0.25.1
 requests
 ffmpeg-python
 streamlit-webrtc
+streamlit-components
