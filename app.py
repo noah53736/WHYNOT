@@ -5,7 +5,6 @@ import io
 import time
 import random
 import string
-import json
 from datetime import datetime
 from pydub import AudioSegment
 import nova_api
@@ -147,7 +146,7 @@ def main():
                 if len(data) > 20*1024*1024:
                     st.info("Fichier trop volumineux, segmentation en morceaux de 20MB.")
                     # Note: Une segmentation plus précise peut être nécessaire
-                    chunks = seg[::20*1024*1024]  # Segmenter toutes les 20MB
+                    chunks = [seg[i:i+20*1024*1024] for i in range(0, len(seg), 20*1024*1024)]
                 else:
                     chunks = [seg]
 
@@ -268,7 +267,7 @@ def main():
         except Exception as e:
             st.error(f"Erreur lors de la transcription : {e}")
 
-    display_history(history)
+    display_history(st.session_state["history"])
 
 if __name__=="__main__":
     main()
