@@ -1,5 +1,8 @@
 # app.py
 
+import warnings
+warnings.filterwarnings("ignore", message="invalid escape sequence", category=SyntaxWarning)
+
 import streamlit as st
 import os
 import requests
@@ -8,6 +11,9 @@ import threading
 from datetime import datetime
 from pydub import AudioSegment, silence
 import subprocess
+
+# Import pour l'enregistrement via le micro
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
 # -----------------------------------------------------------
 # CONFIGURATION ET CONSTANTES
@@ -167,14 +173,32 @@ def transcribe_deepgram(file_path: str,
             os.remove(temp_in)
 
 # -----------------------------------------------------------
+# CLASSE POUR L'ENREGISTREMENT VIA MICRO
+# -----------------------------------------------------------
+
+class AudioProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.recorded = AudioSegment.empty()
+
+    def recv(self, frame):
+        audio = frame.to_ndarray().flatten()
+        self.recorded += AudioSegment(
+            data=audio.tobytes(),
+            sample_width=2,
+            frame_rate=44100,
+            channels=1
+        )
+        return frame
+
+# -----------------------------------------------------------
 # APPLICATION STREAMLIT (UN SEUL SCRIPT)
 # -----------------------------------------------------------
 
 def main():
     st.title("Application Minimaliste : Nova II + Whisper Large")
     st.write("""
-    Téléchargez un ou plusieurs fichiers audio (jusqu'à 15).  
-    Pour **chaque** fichier, on utilise **une clé API** (si disponible)  
+    Téléchargez un ou plusieurs fichiers audio (jusqu'à 15) ou enregistrez via le micro.  
+    Pour **chaque** fichier ou enregistrement, on utilise **une clé API** (si disponible)  
     et on fait **2 transcriptions** : Nova II et Whisper Large.
     """)
 
@@ -227,6 +251,29 @@ def main():
         st.stop()
     st.sidebar.write(f"{len(api_keys)} clés trouvées.")
 
+    # Option d'enregistrement via micro
+    st.write("## Enregistrement via le Microphone")
+    if st.button("Enregistrer via le Microphone"):
+        webrtc_ctx = webrtc_streamer(
+            key="example",
+            mode=WebRtcMode.SENDONLY,
+            audio_processor_factory=AudioProcessor,
+            media_stream_constraints={"audio": True, "video": False},
+            async_processing=True,
+        )
+        if webrtc_ctx.audio_processor:
+            audio_seg = webrtc_ctx.audio_processor.recorded
+            if len(audio_seg) > 0:
+                # Sauvegarde locale
+                in_path = "recorded_audio.wav"
+                audio_seg.export(in_path, format="wav")
+                segments = [("Microphone Enregistré", in_path)]
+                st.audio(in_path, format="audio/wav")
+            else:
+                st.warning("Aucun enregistrement détecté.")
+        else:
+            st.warning("Enregistrement non disponible.")
+
     # Upload
     st.write("## Fichiers Audio")
     upf = st.file_uploader("Importer jusqu'à 15 fichiers audio :",
@@ -241,7 +288,7 @@ def main():
                 st.warning(f"{fobj.name} dépasse {MAX_SIZE_MB} MB, ignoré.")
                 continue
             data = fobj.read()
-            segments.append((data, fobj.name))
+            segments.append((fobj.name, data))
             st.audio(data, format=fobj.type)
 
     if segments and st.button("Transcrire Maintenant"):
@@ -252,7 +299,7 @@ def main():
                        "Seuls les premiers fichiers auront une clé (un fichier par clé).")
         seg_to_process = segments[:len(api_keys)]
 
-        for i, (audio_bytes, name) in enumerate(seg_to_process):
+        for i, (name, audio_bytes) in enumerate(seg_to_process):
             st.write(f"### Fichier #{i+1}: {name}")
             # Sauvegarde locale
             in_path = f"temp_in_{i}.wav"
@@ -286,11 +333,11 @@ def main():
             place_whisper = st.empty()
 
             # Fonctions
-            def run_nova():
-                txt, ok = transcribe_deepgram(out_path, key_api, "fr", "nova-2")
+            def run_nova(path, api_key, placeholder):
+                txt, ok = transcribe_deepgram(path, api_key, "fr", "nova-2")
                 if ok:
-                    place_nova.success("Nova II terminée")
-                    place_nova.text_area("Nova II", txt, height=150)
+                    placeholder.success("Nova II terminée")
+                    placeholder.text_area("Nova II", txt, height=150)
                     copy_to_clipboard(txt)
                     # Ajout dans hist
                     st.session_state["history"].append({
@@ -306,26 +353,25 @@ def main():
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     })
                 else:
-                    place_nova.error("Échec transcription Nova II")
+                    placeholder.error("Échec transcription Nova II")
 
-            def run_whisper():
-                txt, ok = transcribe_deepgram(out_path, key_api, selected_lang, "whisper-large")
+            def run_whisper(path, api_key, lang, placeholder):
+                txt, ok = transcribe_deepgram(path, api_key, lang, "whisper-large")
                 if ok:
-                    place_whisper.success("Whisper Large terminée")
-                    place_whisper.text_area("Whisper Large", txt, height=150)
+                    placeholder.success("Whisper Large terminée")
+                    placeholder.text_area("Whisper Large", txt, height=150)
                     copy_to_clipboard(txt)
                     # Mettre à jour hist
-                    # On parcourt depuis la fin
                     for item in reversed(st.session_state["history"]):
                         if item["audio_name"] == name and item["double_mode"] and not item["transcript_whisper"]:
                             item["transcript_whisper"] = txt
                             break
                 else:
-                    place_whisper.error("Échec transcription Whisper Large")
+                    placeholder.error("Échec transcription Whisper Large")
 
             # Lancer les transcriptions dans des threads
-            t_nova = threading.Thread(target=run_nova)
-            t_whisper = threading.Thread(target=run_whisper)
+            t_nova = threading.Thread(target=run_nova, args=(out_path, key_api, place_nova))
+            t_whisper = threading.Thread(target=run_whisper, args=(out_path, key_api, selected_lang, place_whisper))
             t_nova.start()
             t_whisper.start()
             t_nova.join()
