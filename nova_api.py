@@ -13,7 +13,11 @@ def transcribe_audio(
     punctuate: bool = True,
     numerals: bool = True
 ) -> str:
-    temp_in = "temp_audio.wav"
+    """
+    Transcrit un fichier audio local (file_path) en utilisant DeepGram.
+    Retourne la transcription ou une chaîne vide en cas d'erreur.
+    """
+    temp_in = "temp_audio_tmp.wav"
     try:
         audio = AudioSegment.from_file(file_path)
         audio_16k = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
